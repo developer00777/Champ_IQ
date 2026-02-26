@@ -1,0 +1,20 @@
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Install Playwright and browsers
+RUN npm install -D @playwright/test \
+    && npx playwright install --with-deps chromium
+
+# Copy source code
+COPY . .
+
+# Build the app
+RUN npm run build
+
+# Default command runs tests
+CMD ["npm", "run", "test:e2e"]

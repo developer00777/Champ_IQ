@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "champiq-v2"
+version = "0.1.0"
+description = "ChampIQ V2 AI Engine"
+readme = {text = "ChampIQ V2 AI Engine", content-type = "text/plain"}
+license = {text = "Proprietary"}
+requires-python = ">=3.12"
+authors = [
+    {name = "LakeB2B", email = "dev@lakeb2b.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Private :: Do Not Upload",
+]
+
+dependencies = [
+    # FastAPI & Web
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "httpx>=0.26.0",
+    "python-multipart>=0.0.6",
+
+    # Pydantic & Validation
+    "pydantic[email]>=2.5.0",
+    "pydantic-settings>=2.1.0",
+
+    # Knowledge Graph
+    "graphiti-core>=0.3.0",
+    "neo4j>=5.15.0",
+
+    # LLM
+    "openai>=1.10.0",  # For Ollama/vLLM OpenAI-compatible API
+
+    # Email
+    "aiosmtplib>=3.0.0",
+
+    # Redis (activity stream persistence)
+    "redis[hiredis]>=5.0.0",
+
+    # Utilities
+    "python-dateutil>=2.8.2",
+    "tenacity>=8.2.3",  # Retry logic
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.26.0",  # For TestClient
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+]
+
+[project.scripts]
+champiq-v2 = "champiq_v2.main:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["champiq_v2*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.ruff.isort]
+known-first-party = ["champiq_v2"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
