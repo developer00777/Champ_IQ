@@ -2,12 +2,52 @@ import { useState } from 'react'
 import { useCanvasStore } from '@/store/canvasStore'
 import { getToolId, getNodeMeta } from '@/lib/manifest'
 import { saveCurrentCanvas } from '@/hooks/usePersistence'
-import { Plus, Trash2 } from 'lucide-react'
-import * as LucideIcons from 'lucide-react'
-import { Box } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
-import type { CanvasMeta } from '@/types'
+import { resolveIcon, Plus, Trash2 } from '@/lib/icons'
+import type { ChampIQManifest, CanvasMeta } from '@/types'
 import type { Node, Edge } from '@xyflow/react'
+
+// ── Palette item shape ────────────────────────────────────────────────────────
+// For tool manifests (champmail, champgraph etc): one item, dragId = tool_id
+// For the system manifest: one item per node kind, dragId = kind
+
+interface PaletteItem {
+  dragId: string   // what gets set on dataTransfer — kind for system nodes, tool_id for tools
+  label: string
+  icon: string
+  color: string
+  group?: string
+}
+
+const GROUP_ORDER = ['triggers', 'control', 'data', 'code', 'ai', 'tools']
+
+function buildPalette(manifests: ChampIQManifest[]): { group: string; items: PaletteItem[] }[] {
+  const grouped: Record<string, PaletteItem[]> = {}
+
+  for (const m of manifests) {
+    const toolId = getToolId(m)
+    const meta = getNodeMeta(m)
+
+    if (m.manifest_version === 2 && Array.isArray(m.nodes) && m.nodes.length > 0) {
+      // Expand into per-kind items
+      for (const n of m.nodes) {
+        const kind = n.kind as string
+        const label = (n.label as string) ?? kind
+        const group = (n.group as string) ?? 'other'
+        if (!grouped[group]) grouped[group] = []
+        grouped[group].push({ dragId: kind, label, icon: meta.icon, color: meta.color, group })
+      }
+    } else if (toolId && toolId !== 'champvoice') {
+      // Single tool item (champmail, champgraph, lakeb2b_pulse)
+      const group = 'tools'
+      if (!grouped[group]) grouped[group] = []
+      grouped[group].push({ dragId: toolId, label: meta.label, icon: meta.icon, color: meta.color, group })
+    }
+  }
+
+  return GROUP_ORDER
+    .filter((g) => grouped[g]?.length)
+    .map((g) => ({ group: g, items: grouped[g] }))
+}
 
 // ── Canvas switching helpers ──────────────────────────────────────────────────
 
@@ -78,8 +118,8 @@ export function LeftSidebar() {
     setEditingId(null)
   }
 
-  function onDragStart(e: React.DragEvent, toolId: string) {
-    e.dataTransfer.setData('application/champiq-tool', toolId)
+  function onDragStart(e: React.DragEvent, dragId: string) {
+    e.dataTransfer.setData('application/champiq-tool', dragId)
     e.dataTransfer.effectAllowed = 'move'
   }
 
@@ -152,34 +192,34 @@ export function LeftSidebar() {
 
       <div style={{ borderTop: '1px solid var(--border)' }} />
 
-      {/* ── Tools ─────────────────────────────────────────────────────────── */}
-      <div className="p-3 flex flex-col gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--text-3)' }}>
-          Tools
-        </p>
-        {manifests.map((m) => {
-          const toolId = getToolId(m)
-          const meta = getNodeMeta(m)
-          const iconName = meta.icon as keyof typeof LucideIcons
-          const IconComponent = (LucideIcons[iconName] as LucideIcon | undefined) ?? Box
-
-          return (
-            <div
-              key={toolId}
-              draggable
-              onDragStart={(e) => onDragStart(e, toolId)}
-              className="flex items-center gap-2 p-2 rounded-md cursor-grab active:cursor-grabbing select-none"
-              style={{ border: '1px solid var(--border)', borderLeftColor: meta.color, borderLeftWidth: 3 }}
-              aria-label={`Drag ${meta.label} node to canvas`}
-              role="button"
-              tabIndex={0}
-            >
-              <span style={{ color: meta.color }}><IconComponent size={16} /></span>
-              <span className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>{meta.label}</span>
-            </div>
-          )
-        })}
-      </div>
+      {/* ── Node palette ──────────────────────────────────────────────────── */}
+      {buildPalette(manifests).map(({ group, items }) => (
+        <div key={group} className="px-3 pb-3">
+          <p className="text-xs font-semibold uppercase tracking-wide mb-2 mt-1" style={{ color: 'var(--text-3)' }}>
+            {group}
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {items.map((item) => {
+              const IconComponent = resolveIcon(item.icon)
+              return (
+                <div
+                  key={item.dragId}
+                  draggable
+                  onDragStart={(e) => onDragStart(e, item.dragId)}
+                  className="flex items-center gap-2 p-2 rounded-md cursor-grab active:cursor-grabbing select-none"
+                  style={{ border: '1px solid var(--border)', borderLeftColor: item.color, borderLeftWidth: 3 }}
+                  aria-label={`Drag ${item.label} node to canvas`}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <span style={{ color: item.color }}><IconComponent size={14} /></span>
+                  <span className="text-xs font-medium" style={{ color: 'var(--text-1)' }}>{item.label}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </aside>
   )
 }

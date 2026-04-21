@@ -2,9 +2,7 @@ import { useState, useEffect } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import Form from '@rjsf/core'
 import validator from '@rjsf/validator-ajv8'
-import * as LucideIcons from 'lucide-react'
-import { Box, X } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import { resolveIcon, X } from '@/lib/icons'
 import { useCanvasStore } from '@/store/canvasStore'
 import {
   getNodeMeta,
@@ -26,7 +24,7 @@ const STATUS_COLORS: Record<NodeStatus, string> = {
 }
 
 export function ToolNode(props: NodeProps) {
-  const { id, data } = props
+  const { data } = props
   const manifest = data.manifest as ChampIQManifest | undefined
   const kind = (data.kind as string | undefined) ?? (data.toolId as string | undefined)
 
@@ -52,8 +50,7 @@ function SimpleNode({ id, data, selected }: NodeProps) {
       }
   const { nodeRuntimeStates, setSelectedNode } = useCanvasStore()
   const runtime = nodeRuntimeStates[id] ?? { status: 'idle' as NodeStatus }
-  const iconName = meta.icon as keyof typeof LucideIcons
-  const IconComponent = (LucideIcons[iconName] as LucideIcon | undefined) ?? Box
+  const IconComponent = resolveIcon(meta.icon)
 
   return (
     <div
@@ -127,8 +124,7 @@ function LegacyFormNode({
     (data.config as Record<string, unknown>) ?? {}
   )
 
-  const iconName = meta.icon as keyof typeof LucideIcons
-  const IconComponent = (LucideIcons[iconName] as LucideIcon | undefined) ?? Box
+  const IconComponent = resolveIcon(meta.icon)
 
   useEffect(() => {
     const toolId = getToolId(manifest)

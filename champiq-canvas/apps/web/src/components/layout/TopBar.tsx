@@ -4,7 +4,7 @@ import { useTheme } from '@/hooks/useTheme'
 import { topoLayers } from '@/lib/execution'
 import { getToolId } from '@/lib/manifest'
 import { Button } from '@/components/ui/button'
-import { Save, Play, ZoomIn, ZoomOut, Moon, Sun } from 'lucide-react'
+import { Save, Play, ZoomIn, ZoomOut, Moon, Sun } from '@/lib/icons'
 import { useReactFlow } from '@xyflow/react'
 
 export function TopBar() {

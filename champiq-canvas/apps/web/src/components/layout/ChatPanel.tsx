@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Sparkles, Bot, User, Loader2 } from 'lucide-react'
+import { Send, Sparkles, Bot, User, Loader2 } from '@/lib/icons'
 import { api } from '@/lib/api'
 import { applyWorkflowPatch } from '@/lib/applyPatch'
 import { useCanvasStore } from '@/store/canvasStore'
@@ -14,7 +14,7 @@ const SUGGESTIONS = [
   'Track these LinkedIn pages in Pulse; when a new post appears, schedule a comment and queue a Champmail touch.',
 ]
 
-function parseAssistant(raw: string): { explanation: string; patchApplied?: { added: number; removed: number; updated: number } } {
+function parseAssistant(raw: string): { explanation: string; patch?: unknown } {
   const text = raw.trim()
   const attempt = (() => {
     try {
@@ -29,11 +29,8 @@ function parseAssistant(raw: string): { explanation: string; patchApplied?: { ad
   })()
   if (attempt && typeof attempt === 'object' && 'explanation' in attempt) {
     const explanation = String((attempt as { explanation: string }).explanation ?? '')
-    let patchApplied
-    if ((attempt as { patch?: unknown }).patch) {
-      patchApplied = applyWorkflowPatch((attempt as { patch: Parameters<typeof applyWorkflowPatch>[0] }).patch)
-    }
-    return { explanation, patchApplied }
+    const patch = (attempt as { patch?: unknown }).patch
+    return { explanation, patch }
   }
   return { explanation: raw }
 }
@@ -169,7 +166,20 @@ export function ChatPanel() {
 
 function MessageBubble({ m }: { m: ChatMessage }) {
   const isUser = m.role === 'user'
-  const { explanation } = !isUser ? parseAssistant(m.content) : { explanation: m.content }
+  const [explanation, setExplanation] = useState(m.content)
+
+  useEffect(() => {
+    if (isUser) {
+      setExplanation(m.content)
+      return
+    }
+    const { explanation: exp, patch } = parseAssistant(m.content)
+    setExplanation(exp)
+    if (patch) {
+      applyWorkflowPatch(patch as Parameters<typeof applyWorkflowPatch>[0])
+    }
+  }, [m.content, m.role, isUser])
+
   return (
     <div className="flex gap-2 items-start">
       <span

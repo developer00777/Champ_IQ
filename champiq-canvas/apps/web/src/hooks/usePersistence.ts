@@ -51,16 +51,20 @@ export function usePersistence() {
     if (raw) {
       try {
         const { nodes, edges } = JSON.parse(raw) as { nodes: Node[]; edges: Edge[] }
-        setNodes(nodes)
-        setEdges(edges)
+        const uniqueNodes = nodes.filter((n, i, arr) => arr.findIndex(x => x.id === n.id) === i)
+        const uniqueEdges = edges.filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
+        setNodes(uniqueNodes)
+        setEdges(uniqueEdges)
         return
       } catch { /* ignore corrupt data */ }
     }
     // Fallback: try the API (works when backend is running).
     api.getCanvasState().then((s) => {
       if (s.nodes.length > 0 || s.edges.length > 0) {
-        setNodes(s.nodes as Node[])
-        setEdges(s.edges as Edge[])
+        const uniqueNodes = (s.nodes as Node[]).filter((n, i, arr) => arr.findIndex(x => x.id === n.id) === i)
+        const uniqueEdges = (s.edges as Edge[]).filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
+        setNodes(uniqueNodes)
+        setEdges(uniqueEdges)
       }
     }).catch(() => {})
   }, [currentCanvasId, setNodes, setEdges])

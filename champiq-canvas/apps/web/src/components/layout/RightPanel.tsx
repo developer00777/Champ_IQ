@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useCanvasStore } from '@/store/canvasStore'
-import { X, Copy, Check } from 'lucide-react'
+import { X, Copy, Check } from '@/lib/icons'
 import { getNodeMeta } from '@/lib/manifest'
 import type { ChampIQManifest } from '@/types'
 
@@ -47,7 +47,7 @@ export function RightPanel() {
       <div className="flex-1 overflow-y-auto p-3">
         <p className="text-xs mb-1 font-medium" style={{ color: 'var(--text-2)' }}>Status</p>
         <p className="text-sm mb-3 capitalize" style={{ color: 'var(--text-1)' }}>
-          {(runtime as Record<string, unknown>).status as string ?? 'idle'}
+          {((runtime as unknown) as Record<string, unknown>).status as string ?? 'idle'}
         </p>
         <p className="text-xs mb-1 font-medium" style={{ color: 'var(--text-2)' }}>Full Output</p>
         <pre className="text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words"

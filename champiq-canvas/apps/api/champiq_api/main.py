@@ -1,8 +1,10 @@
+import gzip
+import io
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,20 +57,87 @@ async def health():
     return {"status": "ok"}
 
 
-# --- SPA mount -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SPA static-file serving with gzip + aggressive caching
+# ---------------------------------------------------------------------------
 #
-# In the single-container image, the built SPA lives at /app/web. For local
-# dev, we usually run Vite on :5174 and don't need this mount. Any unknown
-# non-/api path falls through to index.html so React Router works.
+# Strategy:
+#   • index.html           → no-store (un-hashed filename, must always be fresh)
+#   • /assets/*.js|css     → immutable, 1-year max-age (Vite hashes filenames)
+#   • /assets/fonts        → immutable, 1-year max-age
+#
+# Compression:
+#   We gzip assets on first request, cache the result in-process, and
+#   serve the cached bytes for every subsequent request — zero re-compression
+#   CPU cost, and the response is ready in microseconds from RAM instead of
+#   reading 1.3 MB off disk each time.
+# ---------------------------------------------------------------------------
 
 _WEB_DIST = Path(os.environ.get("WEB_DIST_DIR", "/app/web"))
 
-# HTML shell must never be cached — asset filenames are hashed, but index.html
-# is not, so stale shells reference dead bundles and render a blank page.
 _NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, must-revalidate",
     "Pragma": "no-cache",
 }
+
+# Hashed asset files are content-addressed — safe to cache forever.
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+
+# In-process cache: path -> (content_type, gzipped_bytes)
+_gzip_cache: dict[str, tuple[str, bytes]] = {}
+
+_COMPRESSIBLE = {".js", ".css", ".svg", ".json", ".html", ".txt", ".map"}
+_CONTENT_TYPES: dict[str, str] = {
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".json": "application/json",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".ico": "image/x-icon",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def _content_type(path: Path) -> str:
+    return _CONTENT_TYPES.get(path.suffix, "application/octet-stream")
+
+
+def _gzip_asset(path: Path) -> tuple[str, bytes]:
+    """Read, compress (level 6), cache, and return (content_type, gz_bytes)."""
+    key = str(path)
+    if key in _gzip_cache:
+        return _gzip_cache[key]
+    raw = path.read_bytes()
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6) as gz:
+        gz.write(raw)
+    ct = _content_type(path)
+    result = (ct, buf.getvalue())
+    _gzip_cache[key] = result
+    return result
+
+
+def _asset_response(path: Path, request: Request, cache_header: str) -> Response:
+    accepts_gzip = "gzip" in request.headers.get("accept-encoding", "")
+    if accepts_gzip and path.suffix in _COMPRESSIBLE:
+        ct, gz_bytes = _gzip_asset(path)
+        return Response(
+            content=gz_bytes,
+            media_type=ct,
+            headers={
+                "Content-Encoding": "gzip",
+                "Cache-Control": cache_header,
+                "Vary": "Accept-Encoding",
+                # ETag from file mtime — allows 304 on re-validate
+                "ETag": f'"{int(path.stat().st_mtime)}"',
+            },
+        )
+    # Fallback: uncompressed FileResponse (browser doesn't accept gzip)
+    return FileResponse(str(path), headers={"Cache-Control": cache_header})
 
 
 def _spa_shell() -> FileResponse:
@@ -76,21 +145,34 @@ def _spa_shell() -> FileResponse:
 
 
 if _WEB_DIST.exists() and (_WEB_DIST / "index.html").exists():
-    assets_dir = _WEB_DIST / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+    # Warm the gzip cache for the JS and CSS bundles at startup so the first
+    # real browser request is also fast.
+    _assets_dir = _WEB_DIST / "assets"
+    if _assets_dir.exists():
+        for _asset in _assets_dir.iterdir():
+            if _asset.suffix in _COMPRESSIBLE and _asset.is_file():
+                try:
+                    _gzip_asset(_asset)
+                except Exception:
+                    pass
+
+        @app.get("/assets/{asset_path:path}", include_in_schema=False)
+        async def serve_asset(asset_path: str, request: Request) -> Response:
+            candidate = _assets_dir / asset_path
+            if not candidate.is_file() or not candidate.resolve().is_relative_to(_assets_dir.resolve()):
+                return _spa_shell()
+            return _asset_response(candidate, request, _IMMUTABLE_CACHE)
 
     @app.get("/", include_in_schema=False)
     async def spa_root() -> FileResponse:
         return _spa_shell()
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_catch_all(full_path: str, request: Request) -> FileResponse:
-        # API and WS paths that reached here are genuine 404s — serve the
-        # shell anyway so client-side routing can present a 404 page.
+    async def spa_catch_all(full_path: str, request: Request) -> Response:
         if full_path.startswith(("api/", "ws/")) or full_path in {"health", "favicon.ico"}:
             return _spa_shell()
         candidate = _WEB_DIST / full_path
         if candidate.is_file():
-            return FileResponse(str(candidate))
+            cache = _IMMUTABLE_CACHE if candidate.suffix in {".js", ".css", ".woff2", ".woff"} else "no-store"
+            return _asset_response(candidate, request, cache)
         return _spa_shell()
