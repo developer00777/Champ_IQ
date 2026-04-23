@@ -57,6 +57,7 @@ const KIND_META: Record<string, { label: string; color: string }> = {
   'champmail_reply': { label: 'Reply Classifier', color: '#ef4444' },
   'champmail':       { label: 'Champmail',        color: '#f97316' },
   'champgraph':      { label: 'ChampGraph',       color: '#14b8a6' },
+  'champvoice':      { label: 'ChampVoice',       color: '#a855f7' },
   'lakeb2b_pulse':   { label: 'LakeB2B Pulse',   color: '#64748b' },
 }
 
@@ -67,7 +68,7 @@ function configSummary(config: Record<string, unknown>, kind: string): string | 
   if (kind === 'split') return `split into ${config.n ?? 2} branches`
   if (kind === 'wait') return config.seconds ? `wait ${config.seconds}s` : null
   if (kind.startsWith('trigger.cron')) return config.cron ? String(config.cron) : null
-  if (kind === 'champmail' || kind === 'champgraph' || kind === 'lakeb2b_pulse') {
+  if (kind === 'champmail' || kind === 'champgraph' || kind === 'champvoice' || kind === 'lakeb2b_pulse') {
     return config.action ? `action: ${config.action}` : null
   }
   if (kind === 'http') return config.url ? String(config.url).slice(0, 35) : null

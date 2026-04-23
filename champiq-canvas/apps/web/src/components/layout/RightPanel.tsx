@@ -1,24 +1,132 @@
 /**
- * RightPanel — Node Inspector + Manual Config Editor
+ * RightPanel — Node Inspector + Config Editor
  *
- * Every node kind gets a human-readable form for its config fields.
- * Changes are applied immediately to the canvas store.
+ * Tabs: Form (structured fields) | JSON (raw edit)
+ * Tool nodes (champmail, champgraph, champvoice, lakeb2b) get action-aware
+ * dynamic input sections. Credential fields show a picker populated from
+ * the global CredentialStore.
  */
 import { useState, useEffect } from 'react'
 import { useCanvasStore } from '@/store/canvasStore'
+import { useCredentialStore, TOOL_CREDENTIAL_TYPE } from '@/store/credentialStore'
 import { X, Copy, Check, ChevronDown, ChevronUp } from '@/lib/icons'
 import { getNodeMeta } from '@/lib/manifest'
 import type { ChampIQManifest } from '@/types'
 
-// ── Per-kind config field definitions ──────────────────────────────────────
+// ── Per-kind static field definitions ────────────────────────────────────────
 
 interface FieldDef {
   key: string
   label: string
-  type: 'text' | 'textarea' | 'number' | 'select' | 'json'
+  type: 'text' | 'textarea' | 'number' | 'select' | 'json' | 'credential'
   options?: string[]
   placeholder?: string
   hint?: string
+}
+
+// For tool nodes: action → specific input fields shown when that action is selected
+const ACTION_FIELDS: Record<string, Record<string, FieldDef[]>> = {
+  champmail: {
+    add_prospect: [
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{item.email}}' },
+      { key: 'first_name', label: 'First name', type: 'text', placeholder: '{{item.first_name}}' },
+      { key: 'last_name', label: 'Last name', type: 'text', placeholder: '{{item.last_name}}' },
+      { key: 'company', label: 'Company', type: 'text', placeholder: '{{item.company}}' },
+    ],
+    start_sequence: [
+      { key: 'email', label: 'Prospect email', type: 'text', placeholder: '{{item.email}}' },
+      { key: 'sequence_id', label: 'Sequence ID', type: 'text', placeholder: 'seq_abc123' },
+    ],
+    enroll_sequence: [
+      { key: 'email', label: 'Prospect email', type: 'text', placeholder: '{{item.email}}' },
+      { key: 'sequence_id', label: 'Sequence ID', type: 'text', placeholder: 'seq_abc123' },
+    ],
+    pause_sequence: [
+      { key: 'email', label: 'Prospect email', type: 'text', placeholder: '{{item.email}}' },
+    ],
+    send_single_email: [
+      { key: 'email', label: 'To email', type: 'text', placeholder: '{{item.email}}' },
+      { key: 'subject', label: 'Subject', type: 'text', placeholder: 'Following up…' },
+      { key: 'body', label: 'Body', type: 'textarea', placeholder: 'Hi {{item.first_name}},…' },
+    ],
+    get_analytics: [
+      { key: 'sequence_id', label: 'Sequence ID (optional)', type: 'text' },
+    ],
+    list_templates: [],
+  },
+  champgraph: {
+    ingest_prospect: [
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{item.email}}' },
+      { key: 'first_name', label: 'First name', type: 'text', placeholder: '{{item.first_name}}' },
+      { key: 'last_name', label: 'Last name', type: 'text', placeholder: '{{item.last_name}}' },
+      { key: 'company', label: 'Company', type: 'text', placeholder: '{{item.company}}' },
+      { key: 'title', label: 'Title', type: 'text', placeholder: '{{item.title}}' },
+    ],
+    get_prospect_status: [
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{item.email}}' },
+    ],
+    ingest_company: [
+      { key: 'name', label: 'Company name', type: 'text', placeholder: '{{item.company}}' },
+      { key: 'domain', label: 'Domain', type: 'text', placeholder: '{{item.domain}}' },
+      { key: 'industry', label: 'Industry', type: 'text', placeholder: '{{item.industry}}' },
+    ],
+    semantic_search: [
+      { key: 'query', label: 'Query', type: 'text', placeholder: '{{prev.search_term}}' },
+      { key: 'limit', label: 'Max results', type: 'number' },
+    ],
+    nl_query: [
+      { key: 'query', label: 'Natural-language query', type: 'textarea',
+        placeholder: 'Find all prospects at enterprise companies in fintech' },
+    ],
+    add_relationship: [
+      { key: 'from_email', label: 'From (email)', type: 'text', placeholder: '{{prev.email}}' },
+      { key: 'to_email', label: 'To (email)', type: 'text', placeholder: '{{prev.target_email}}' },
+      { key: 'relationship', label: 'Relationship type', type: 'text', placeholder: 'knows / colleague' },
+    ],
+  },
+  champvoice: {
+    initiate_call: [
+      { key: 'phone_number', label: 'Phone number', type: 'text', placeholder: '{{item.phone}}' },
+      { key: 'prospect_name', label: 'Prospect name', type: 'text', placeholder: '{{item.first_name}} {{item.last_name}}' },
+      { key: 'company_name', label: 'Company name', type: 'text', placeholder: '{{item.company}}' },
+      { key: 'call_reason', label: 'Call reason', type: 'select',
+        options: ['cold_outreach', 'email_follow_up', 'sequence_completed', 'replied_follow_up'] },
+      { key: 'script_id', label: 'Script ID (optional)', type: 'text' },
+      { key: 'engagement_context', label: 'Engagement context (JSON)', type: 'textarea',
+        placeholder: '{"engagement_status":"{{prev.engagement_status}}"}',
+        hint: 'Pass prospect status data from ChampGraph to personalize the call.' },
+    ],
+    get_call_status: [
+      { key: 'call_id', label: 'Call ID', type: 'text', placeholder: '{{prev.call_id}}' },
+    ],
+    list_scripts: [],
+    list_calls: [
+      { key: 'limit', label: 'Max results', type: 'number' },
+      { key: 'status', label: 'Filter by status', type: 'select',
+        options: ['', 'initiated', 'in_progress', 'completed', 'failed', 'cancelled'] },
+    ],
+    cancel_call: [
+      { key: 'call_id', label: 'Call ID', type: 'text', placeholder: '{{prev.call_id}}' },
+    ],
+  },
+  lakeb2b_pulse: {
+    track_page: [
+      { key: 'page_url', label: 'LinkedIn URL', type: 'text', placeholder: '{{item.linkedin_url}}' },
+    ],
+    schedule_engagement: [
+      { key: 'prospect_id', label: 'Prospect ID', type: 'text', placeholder: '{{prev.id}}' },
+      { key: 'action_type', label: 'Action type', type: 'select',
+        options: ['like', 'comment', 'connect', 'message'] },
+      { key: 'message', label: 'Message (optional)', type: 'textarea' },
+    ],
+    list_posts: [
+      { key: 'page_url', label: 'LinkedIn profile URL', type: 'text', placeholder: '{{item.linkedin_url}}' },
+      { key: 'limit', label: 'Max posts', type: 'number' },
+    ],
+    get_engagement_status: [
+      { key: 'prospect_id', label: 'Prospect ID', type: 'text', placeholder: '{{prev.id}}' },
+    ],
+  },
 }
 
 const KIND_FIELDS: Record<string, FieldDef[]> = {
@@ -34,7 +142,7 @@ const KIND_FIELDS: Record<string, FieldDef[]> = {
   ],
   'trigger.cron': [
     { key: 'cron', label: 'Cron expression', type: 'text', placeholder: '0 9 * * 1-5',
-      hint: 'Examples: "0 9 * * 1-5" = weekdays 9am, "0 8 * * *" = daily 8am' },
+      hint: 'Examples: "0 9 * * 1-5" = weekdays 9am · "0 8 * * *" = daily 8am' },
     { key: 'timezone', label: 'Timezone', type: 'text', placeholder: 'UTC' },
   ],
   'trigger.event': [
@@ -48,7 +156,7 @@ const KIND_FIELDS: Record<string, FieldDef[]> = {
       placeholder: '{"Authorization":"Bearer {{credential.token}}"}' },
     { key: 'body', label: 'Body (JSON or text)', type: 'textarea',
       placeholder: '{"text":"{{prev.message}}"}' },
-    { key: 'credential', label: 'Credential name (optional)', type: 'text' },
+    { key: 'credential', label: 'Credential', type: 'credential' },
   ],
   'set': [
     { key: 'fields', label: 'Fields (JSON object — keys = output fields, values = expressions)',
@@ -98,35 +206,37 @@ const KIND_FIELDS: Record<string, FieldDef[]> = {
     { key: 'model', label: 'Model override (optional)', type: 'text', placeholder: 'anthropic/claude-3-haiku' },
   ],
   'champmail_reply': [
-    { key: 'credential', label: 'ChampMail credential name', type: 'text', placeholder: 'champmail-admin' },
+    { key: 'credential', label: 'ChampMail credential', type: 'credential' },
   ],
+  // Tool nodes — defined below as combined action + credential + dynamic inputs
   'champmail': [
     { key: 'action', label: 'Action', type: 'select',
       options: ['add_prospect', 'start_sequence', 'pause_sequence', 'send_single_email',
         'get_analytics', 'list_templates', 'enroll_sequence'] },
-    { key: 'credential', label: 'ChampMail credential name', type: 'text',
-      placeholder: 'champmail-admin',
-      hint: '⚠ Required. Add via Credentials button in chat panel.' },
-    { key: 'inputs', label: 'Inputs (JSON object of field → expression mappings)', type: 'textarea',
-      placeholder: '{"email":"{{item.email}}","sequence_id":"seq_abc123"}' },
+    { key: 'credential', label: 'ChampMail credential', type: 'credential',
+      hint: '⚠ Required. Add via Credentials section in the left sidebar.' },
   ],
   'champgraph': [
     { key: 'action', label: 'Action', type: 'select',
-      options: ['ingest_prospect', 'ingest_company', 'semantic_search', 'nl_query', 'add_relationship'] },
-    { key: 'credential', label: 'ChampGraph credential name (optional)', type: 'text' },
-    { key: 'inputs', label: 'Inputs (JSON object)', type: 'textarea',
-      placeholder: '{"query":"{{prev.search_term}}"}' },
+      options: ['ingest_prospect', 'get_prospect_status', 'ingest_company', 'semantic_search', 'nl_query', 'add_relationship'] },
+    { key: 'credential', label: 'ChampGraph credential (optional)', type: 'credential' },
+  ],
+  'champvoice': [
+    { key: 'action', label: 'Action', type: 'select',
+      options: ['initiate_call', 'get_call_status', 'list_scripts', 'list_calls', 'cancel_call'] },
+    { key: 'credential', label: 'ChampVoice credential (optional)', type: 'credential' },
   ],
   'lakeb2b_pulse': [
     { key: 'action', label: 'Action', type: 'select',
       options: ['track_page', 'schedule_engagement', 'list_posts', 'get_engagement_status'] },
-    { key: 'credential', label: 'LakeB2B credential name (optional)', type: 'text' },
-    { key: 'inputs', label: 'Inputs (JSON object)', type: 'textarea',
-      placeholder: '{"page_url":"{{item.linkedin_url}}"}' },
+    { key: 'credential', label: 'LakeB2B credential (optional)', type: 'credential' },
   ],
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// Kinds that have action-aware dynamic input sections
+const TOOL_KINDS_WITH_ACTIONS = new Set(['champmail', 'champgraph', 'champvoice', 'lakeb2b_pulse'])
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function getKind(nodeData: Record<string, unknown>): string {
   return (nodeData.kind as string)
@@ -146,13 +256,88 @@ function stringToConfig(val: string, type: FieldDef['type']): unknown {
   if (type === 'json' || type === 'textarea') {
     const trimmed = val.trim()
     if (!trimmed) return undefined
-    try { return JSON.parse(trimmed) } catch { return val }  // keep raw string if invalid JSON
+    try { return JSON.parse(trimmed) } catch { return val }
   }
   if (type === 'select' && (val === 'true' || val === 'false')) return val === 'true'
   return val
 }
 
-// ── NodeConfigForm ───────────────────────────────────────────────────────────
+// ── CredentialPicker ─────────────────────────────────────────────────────────
+
+function CredentialPicker({ nodeKind, value, onChange }: {
+  nodeKind: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { credentials } = useCredentialStore()
+  const credType = TOOL_CREDENTIAL_TYPE[nodeKind]
+  const filtered = credType ? credentials.filter((c) => c.type === credType) : credentials
+  const [useCustom, setUseCustom] = useState(!filtered.some((c) => c.name === value) && value !== '')
+
+  // If stored creds list changes and current value matches one, switch to picker mode
+  useEffect(() => {
+    if (filtered.some((c) => c.name === value)) setUseCustom(false)
+  }, [filtered.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (filtered.length === 0) {
+    return (
+      <div className="flex flex-col gap-1">
+        <input
+          type="text"
+          className="text-xs p-1.5 rounded-md focus:outline-none"
+          style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+          placeholder="credential-name  (add via Credentials panel)"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+    )
+  }
+
+  if (useCustom) {
+    return (
+      <div className="flex gap-1">
+        <input
+          type="text"
+          className="flex-1 text-xs p-1.5 rounded-md focus:outline-none"
+          style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+          placeholder="credential-name"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          className="text-xs px-2 rounded-md"
+          style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}
+          onClick={() => setUseCustom(false)}
+        >
+          Pick
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex gap-1">
+      <select
+        className="flex-1 text-xs p-1.5 rounded-md focus:outline-none"
+        style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+        value={value}
+        onChange={(e) => {
+          if (e.target.value === '__custom__') { setUseCustom(true); onChange('') }
+          else onChange(e.target.value)
+        }}
+      >
+        <option value="">— select credential —</option>
+        {filtered.map((c) => (
+          <option key={c.id} value={c.name}>{c.name} ({c.type})</option>
+        ))}
+        <option value="__custom__">── Enter custom name ──</option>
+      </select>
+    </div>
+  )
+}
+
+// ── NodeConfigForm ────────────────────────────────────────────────────────────
 
 function NodeConfigForm({ nodeId, kind, config }: {
   nodeId: string
@@ -160,28 +345,101 @@ function NodeConfigForm({ nodeId, kind, config }: {
   config: Record<string, unknown>
 }) {
   const { updateNodeConfig } = useCanvasStore()
-  const fields = KIND_FIELDS[kind] || []
+  const staticFields = KIND_FIELDS[kind] || []
+  const currentAction = config.action as string | undefined
+
+  // Derive action-specific input fields when applicable
+  const actionFields: FieldDef[] = TOOL_KINDS_WITH_ACTIONS.has(kind) && currentAction
+    ? (ACTION_FIELDS[kind]?.[currentAction] ?? [])
+    : []
+
+  // Flat list of all rendered fields (static + action-specific inputs section)
+  // stored separately: static fields write directly to config keys,
+  // action fields write into config.inputs[key]
   const [local, setLocal] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {}
-    for (const f of fields) init[f.key] = configToString(config[f.key])
+    for (const f of staticFields) init[f.key] = configToString(config[f.key])
+    const inputs = (config.inputs as Record<string, unknown>) ?? {}
+    for (const f of actionFields) init[`inputs.${f.key}`] = configToString(inputs[f.key])
     return init
   })
 
-  // Sync if node changes externally
+  // Sync when node or action changes
   useEffect(() => {
     const next: Record<string, string> = {}
-    for (const f of fields) next[f.key] = configToString(config[f.key])
+    for (const f of staticFields) next[f.key] = configToString(config[f.key])
+    const inputs = (config.inputs as Record<string, unknown>) ?? {}
+    const newActionFields = currentAction ? (ACTION_FIELDS[kind]?.[currentAction] ?? []) : []
+    for (const f of newActionFields) next[`inputs.${f.key}`] = configToString(inputs[f.key])
     setLocal(next)
-  }, [nodeId, kind]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [nodeId, kind, currentAction]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function handleChange(key: string, rawVal: string, fieldType: FieldDef['type']) {
+  function applyChange(key: string, rawVal: string, fieldType: FieldDef['type'], isInput: boolean) {
     setLocal((prev) => ({ ...prev, [key]: rawVal }))
     const parsed = stringToConfig(rawVal, fieldType)
-    const next = { ...config, [key]: parsed }
-    updateNodeConfig(nodeId, next)
+    if (isInput) {
+      const existingInputs = (config.inputs as Record<string, unknown>) ?? {}
+      const inputKey = key.replace('inputs.', '')
+      updateNodeConfig(nodeId, { ...config, inputs: { ...existingInputs, [inputKey]: parsed } })
+    } else {
+      updateNodeConfig(nodeId, { ...config, [key]: parsed })
+    }
   }
 
-  if (fields.length === 0) {
+  function renderField(field: FieldDef, isInput = false) {
+    const storeKey = isInput ? `inputs.${field.key}` : field.key
+    const val = local[storeKey] ?? ''
+
+    return (
+      <div key={storeKey} className="flex flex-col gap-1">
+        <label className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>
+          {field.label}
+        </label>
+
+        {field.type === 'credential' ? (
+          <CredentialPicker
+            nodeKind={kind}
+            value={val}
+            onChange={(v) => applyChange(field.key, v, 'text', false)}
+          />
+        ) : field.type === 'select' ? (
+          <select
+            className="text-xs p-1.5 rounded-md focus:outline-none"
+            style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+            value={val}
+            onChange={(e) => applyChange(storeKey, e.target.value, field.type, isInput)}
+          >
+            <option value="">— select —</option>
+            {field.options?.map((o) => <option key={o} value={o}>{o || '(any)'}</option>)}
+          </select>
+        ) : field.type === 'textarea' ? (
+          <textarea
+            rows={4}
+            className="text-xs p-1.5 rounded-md resize-y focus:outline-none font-mono"
+            style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+            value={val}
+            placeholder={field.placeholder}
+            onChange={(e) => applyChange(storeKey, e.target.value, field.type, isInput)}
+          />
+        ) : (
+          <input
+            type={field.type === 'number' ? 'number' : 'text'}
+            className="text-xs p-1.5 rounded-md focus:outline-none"
+            style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+            value={val}
+            placeholder={field.placeholder}
+            onChange={(e) => applyChange(storeKey, e.target.value, field.type, isInput)}
+          />
+        )}
+
+        {field.hint && (
+          <p className="text-xs" style={{ color: 'var(--text-3)' }}>{field.hint}</p>
+        )}
+      </div>
+    )
+  }
+
+  if (staticFields.length === 0) {
     return (
       <p className="text-xs p-3" style={{ color: 'var(--text-3)' }}>
         No configurable fields for <code>{kind}</code>. Edit via the raw JSON below.
@@ -191,55 +449,100 @@ function NodeConfigForm({ nodeId, kind, config }: {
 
   return (
     <div className="flex flex-col gap-3 p-3">
-      {fields.map((field) => (
-        <div key={field.key} className="flex flex-col gap-1">
+      {/* Static fields (action selector, credential picker, top-level keys) */}
+      {staticFields.map((f) => renderField(f, false))}
+
+      {/* Action-specific inputs section */}
+      {actionFields.length > 0 && (
+        <>
+          <div className="flex items-center gap-2 mt-1">
+            <div className="flex-1" style={{ borderTop: '1px solid var(--border)' }} />
+            <span className="text-xs uppercase tracking-wide shrink-0" style={{ color: 'var(--text-3)' }}>
+              Inputs for {currentAction}
+            </span>
+            <div className="flex-1" style={{ borderTop: '1px solid var(--border)' }} />
+          </div>
+          {actionFields.map((f) => renderField(f, true))}
+        </>
+      )}
+
+      {/* Fallback raw inputs for tool nodes when no action chosen or no mapped action */}
+      {TOOL_KINDS_WITH_ACTIONS.has(kind) && (!currentAction || actionFields.length === 0) && (
+        <div className="flex flex-col gap-1">
           <label className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>
-            {field.label}
+            Inputs (JSON object)
           </label>
-          {field.type === 'select' ? (
-            <select
-              className="text-xs p-1.5 rounded-md focus:outline-none"
-              style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
-              value={local[field.key] ?? ''}
-              onChange={(e) => handleChange(field.key, e.target.value, field.type)}
-            >
-              <option value="">— select —</option>
-              {field.options?.map((o) => <option key={o} value={o}>{o}</option>)}
-            </select>
-          ) : field.type === 'textarea' ? (
-            <textarea
-              rows={4}
-              className="text-xs p-1.5 rounded-md resize-y focus:outline-none font-mono"
-              style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
-              value={local[field.key] ?? ''}
-              placeholder={field.placeholder}
-              onChange={(e) => handleChange(field.key, e.target.value, field.type)}
-            />
-          ) : (
-            <input
-              type={field.type === 'number' ? 'number' : 'text'}
-              className="text-xs p-1.5 rounded-md focus:outline-none"
-              style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
-              value={local[field.key] ?? ''}
-              placeholder={field.placeholder}
-              onChange={(e) => handleChange(field.key, e.target.value, field.type)}
-            />
-          )}
-          {field.hint && (
-            <p className="text-xs" style={{ color: 'var(--text-3)' }}>{field.hint}</p>
-          )}
+          <textarea
+            rows={4}
+            className="text-xs p-1.5 rounded-md resize-y focus:outline-none font-mono"
+            style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+            value={configToString(config.inputs)}
+            placeholder={'{"email":"{{item.email}}"}'}
+            onChange={(e) => {
+              const parsed = stringToConfig(e.target.value, 'textarea')
+              updateNodeConfig(nodeId, { ...config, inputs: parsed })
+            }}
+          />
+          <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+            Select an action above to get structured input fields.
+          </p>
         </div>
-      ))}
+      )}
     </div>
   )
 }
 
-// ── RightPanel ───────────────────────────────────────────────────────────────
+// ── JSON Editor tab ───────────────────────────────────────────────────────────
+
+function JsonConfigEditor({ nodeId, config }: { nodeId: string; config: Record<string, unknown> }) {
+  const { updateNodeConfig } = useCanvasStore()
+  const [raw, setRaw] = useState(() => JSON.stringify(config, null, 2))
+  const [error, setError] = useState('')
+
+  // Sync when node changes externally
+  useEffect(() => {
+    setRaw(JSON.stringify(config, null, 2))
+    setError('')
+  }, [nodeId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleBlur() {
+    try {
+      const parsed = JSON.parse(raw)
+      updateNodeConfig(nodeId, parsed)
+      setError('')
+    } catch {
+      setError('Invalid JSON — changes not saved')
+    }
+  }
+
+  return (
+    <div className="p-3 flex flex-col gap-2">
+      <textarea
+        rows={16}
+        className="text-xs p-2 rounded-md resize-y focus:outline-none font-mono w-full"
+        style={{ background: 'var(--bg-sidebar)', border: `1px solid ${error ? '#ef4444' : 'var(--border)'}`, color: 'var(--text-1)' }}
+        value={raw}
+        onChange={(e) => { setRaw(e.target.value); setError('') }}
+        onBlur={handleBlur}
+        spellCheck={false}
+      />
+      {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
+      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+        Edit raw config JSON. Changes apply on blur (click outside the editor).
+      </p>
+    </div>
+  )
+}
+
+// ── RightPanel ────────────────────────────────────────────────────────────────
+
+type ConfigTab = 'form' | 'json'
 
 export function RightPanel() {
   const { selectedNodeId, nodes, nodeRuntimeStates, setSelectedNode } = useCanvasStore()
   const [copied, setCopied] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
+  const [activeTab, setActiveTab] = useState<ConfigTab>('form')
 
   const node = nodes.find((n) => n.id === selectedNodeId)
   if (!node) return null
@@ -297,45 +600,63 @@ export function RightPanel() {
         )}
       </div>
 
-      {/* Config form */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-          <p className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--text-3)' }}>
-            Configuration
-          </p>
-        </div>
-
-        <NodeConfigForm nodeId={node.id} kind={kind} config={config} />
-
-        {/* Raw output toggle */}
-        <div style={{ borderTop: '1px solid var(--border)' }}>
+      {/* Config tabs */}
+      <div className="flex" style={{ borderBottom: '1px solid var(--border)' }}>
+        {(['form', 'json'] as ConfigTab[]).map((tab) => (
           <button
-            className="w-full flex items-center justify-between px-3 py-2 text-xs"
-            style={{ color: 'var(--text-3)' }}
-            onClick={() => setShowRaw((v) => !v)}
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className="flex-1 text-xs py-2 font-medium capitalize"
+            style={{
+              color: activeTab === tab ? 'var(--text-1)' : 'var(--text-3)',
+              borderBottom: activeTab === tab ? '2px solid #6366f1' : '2px solid transparent',
+            }}
           >
-            <span>Raw JSON (config + output)</span>
-            {showRaw ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {tab === 'form' ? 'Form' : 'JSON'}
           </button>
-          {showRaw && (
-            <pre
-              className="text-xs px-3 pb-3 overflow-x-auto whitespace-pre-wrap break-words"
-              style={{ color: 'var(--text-1)', maxHeight: 300, overflowY: 'auto' }}
-            >
-              {jsonText}
-            </pre>
-          )}
-        </div>
+        ))}
+      </div>
 
-        {/* Runtime output preview */}
-        {runtime?.output && (
-          <div className="px-3 pb-3">
-            <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-2)' }}>Last output preview</p>
-            <pre className="text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words"
-              style={{ background: 'var(--bg-sidebar)', color: 'var(--text-1)', maxHeight: 200, overflowY: 'auto' }}>
-              {JSON.stringify(runtime.output, null, 2)}
-            </pre>
-          </div>
+      {/* Config body */}
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === 'form' ? (
+          <NodeConfigForm nodeId={node.id} kind={kind} config={config} />
+        ) : (
+          <JsonConfigEditor nodeId={node.id} config={config} />
+        )}
+
+        {/* Runtime output / raw toggle — only in Form tab */}
+        {activeTab === 'form' && (
+          <>
+            <div style={{ borderTop: '1px solid var(--border)' }}>
+              <button
+                className="w-full flex items-center justify-between px-3 py-2 text-xs"
+                style={{ color: 'var(--text-3)' }}
+                onClick={() => setShowRaw((v) => !v)}
+              >
+                <span>Runtime output (JSON)</span>
+                {showRaw ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {showRaw && (
+                <pre
+                  className="text-xs px-3 pb-3 overflow-x-auto whitespace-pre-wrap break-words"
+                  style={{ color: 'var(--text-1)', maxHeight: 300, overflowY: 'auto' }}
+                >
+                  {jsonText}
+                </pre>
+              )}
+            </div>
+
+            {runtime?.output && (
+              <div className="px-3 pb-3">
+                <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-2)' }}>Last output preview</p>
+                <pre className="text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words"
+                  style={{ background: 'var(--bg-sidebar)', color: 'var(--text-1)', maxHeight: 200, overflowY: 'auto' }}>
+                  {JSON.stringify(runtime.output, null, 2)}
+                </pre>
+              </div>
+            )}
+          </>
         )}
       </div>
     </aside>

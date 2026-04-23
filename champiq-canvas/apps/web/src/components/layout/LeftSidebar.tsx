@@ -3,6 +3,7 @@ import { useCanvasStore } from '@/store/canvasStore'
 import { getToolId, getNodeMeta } from '@/lib/manifest'
 import { saveCurrentCanvas } from '@/hooks/usePersistence'
 import { resolveIcon, Plus, Trash2 } from '@/lib/icons'
+import { CredentialsPanel } from './CredentialsPanel'
 import type { ChampIQManifest, CanvasMeta } from '@/types'
 import type { Node, Edge } from '@xyflow/react'
 
@@ -191,6 +192,9 @@ export function LeftSidebar() {
       </div>
 
       <div style={{ borderTop: '1px solid var(--border)' }} />
+
+      {/* ── Credentials ───────────────────────────────────────────────────── */}
+      <CredentialsPanel />
 
       {/* ── Node palette ──────────────────────────────────────────────────── */}
       {buildPalette(manifests).map(({ group, items }) => (
