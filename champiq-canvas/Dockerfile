@@ -82,6 +82,10 @@ COPY --from=web-builder /src/apps/web/dist ./web
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Start script (migrations + uvicorn)
+COPY start.sh /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/start.sh
+
 ENV PYTHONPATH=/app/apps/api
 
 WORKDIR /app/apps/api
@@ -93,7 +97,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
   CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# CMD is overridden by the entrypoint script which reads $PORT at runtime
-CMD ["sh", "-c", "uvicorn champiq_api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --loop uvloop --http httptools"]
+CMD ["/usr/local/bin/start.sh"]
