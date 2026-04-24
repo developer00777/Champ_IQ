@@ -181,8 +181,8 @@ class ChampVoiceDriver(HttpToolDriver):
         self,
         conversation_id: str,
         headers: dict[str, str],
-        poll_interval: float = 15.0,
-        max_wait: float = 600.0,
+        poll_interval: float = 10.0,
+        max_wait: float = 300.0,
     ) -> tuple[list[dict[str, Any]], Any, Any, str]:
         """Poll ElevenLabs until conversation status is 'done' or 'failed'.
 
@@ -204,7 +204,11 @@ class ChampVoiceDriver(HttpToolDriver):
                 if r.status_code != 200:
                     continue
                 d = r.json()
-                if d.get("status") in ("done", "failed"):
+                # Terminal states — ElevenLabs uses: done, failed, no_answer, voicemail
+                # Anything that is not "in_progress" or "initiated" is terminal
+                call_status = d.get("status", "")
+                is_terminal = call_status not in ("in_progress", "initiated", "processing", "")
+                if is_terminal:
                     transcript = [
                         {
                             "speaker": "agent" if t.get("role") == "agent" else "user",
@@ -215,11 +219,12 @@ class ChampVoiceDriver(HttpToolDriver):
                         if t.get("message") and t.get("message") != "None"
                     ]
                     metadata = d.get("metadata") or {}
+                    final = "completed" if call_status == "done" else call_status
                     return (
                         transcript,
                         metadata.get("call_duration_secs"),
                         metadata.get("recording_url"),
-                        "completed" if d.get("status") == "done" else "failed",
+                        final,
                     )
             except Exception:
                 continue  # transient error — keep polling
