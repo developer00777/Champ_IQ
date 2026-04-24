@@ -538,7 +538,7 @@ type ConfigTab = 'form' | 'json'
 export function RightPanel() {
   const { selectedNodeId, nodes, nodeRuntimeStates, setSelectedNode } = useCanvasStore()
   const [copied, setCopied] = useState(false)
-  const [showRaw, setShowRaw] = useState(false)
+  const [showRaw, setShowRaw] = useState(true)
   const [activeTab, setActiveTab] = useState<ConfigTab>('form')
 
   const node = nodes.find((n) => n.id === selectedNodeId)
@@ -622,39 +622,29 @@ export function RightPanel() {
           <JsonConfigEditor nodeId={node.id} config={config} />
         )}
 
-        {/* Runtime output / raw toggle — only in Form tab */}
-        {activeTab === 'form' && (
-          <>
-            <div style={{ borderTop: '1px solid var(--border)' }}>
-              <button
-                className="w-full flex items-center justify-between px-3 py-2 text-xs"
-                style={{ color: 'var(--text-3)' }}
-                onClick={() => setShowRaw((v) => !v)}
-              >
-                <span>Runtime output (JSON)</span>
-                {showRaw ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-              </button>
-              {showRaw && (
-                <pre
-                  className="text-xs px-3 pb-3 overflow-x-auto whitespace-pre-wrap break-words"
-                  style={{ color: 'var(--text-1)', maxHeight: 300, overflowY: 'auto' }}
-                >
-                  {jsonText}
-                </pre>
-              )}
-            </div>
-
-            {runtime?.output && (
-              <div className="px-3 pb-3">
-                <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-2)' }}>Last output preview</p>
-                <pre className="text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words"
-                  style={{ background: 'var(--bg-sidebar)', color: 'var(--text-1)', maxHeight: 200, overflowY: 'auto' }}>
-                  {JSON.stringify(runtime.output, null, 2)}
-                </pre>
-              </div>
-            )}
-          </>
-        )}
+        {/* Runtime output — always visible after execution */}
+        <div style={{ borderTop: '1px solid var(--border)' }}>
+          <button
+            className="w-full flex items-center justify-between px-3 py-2 text-xs"
+            style={{ color: 'var(--text-3)' }}
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            <span className="font-medium" style={{ color: runtime?.output ? 'var(--text-1)' : 'var(--text-3)' }}>
+              {runtime?.output ? '✓ Runtime output (JSON)' : 'Runtime output (JSON)'}
+            </span>
+            {showRaw ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {showRaw && (
+            <pre
+              className="text-xs px-3 pb-3 overflow-x-auto whitespace-pre-wrap break-words"
+              style={{ color: 'var(--text-1)', maxHeight: 400, overflowY: 'auto' }}
+            >
+              {runtime?.output
+                ? JSON.stringify(runtime.output, null, 2)
+                : '// No output yet — run the workflow first'}
+            </pre>
+          )}
+        </div>
       </div>
     </aside>
   )
