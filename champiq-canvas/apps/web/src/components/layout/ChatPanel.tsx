@@ -209,7 +209,6 @@ export function ChatPanel() {
           items: result.records,
         })
       } else {
-        // Add a manual trigger with the records pre-loaded
         applyWorkflowPatch({
           add_nodes: [{
             id: `trigger.manual-upload-${Date.now()}`,
@@ -224,6 +223,32 @@ export function ChatPanel() {
           add_edges: [],
           remove_node_ids: [],
           update_nodes: [],
+        })
+      }
+
+      // Auto-configure any loop node on the canvas to use the uploaded items
+      const loopNode = useCanvasStore.getState().nodes.find((n) => n.data?.kind === 'loop')
+      if (loopNode) {
+        useCanvasStore.getState().updateNodeConfig(loopNode.id, {
+          items: '{{ prev.payload.items }}',
+          concurrency: 1,
+          each: {},
+        })
+      }
+
+      // Auto-configure champvoice node to use item fields from CSV columns
+      const champvoiceNode = useCanvasStore.getState().nodes.find((n) => n.data?.kind === 'champvoice')
+      if (champvoiceNode) {
+        const existingConfig = (champvoiceNode.data.config as Record<string, unknown>) || {}
+        const hasPhone = result.columns.includes('phone')
+        useCanvasStore.getState().updateNodeConfig(champvoiceNode.id, {
+          ...existingConfig,
+          inputs: {
+            to_number: hasPhone ? '{{ item.phone }}' : '{{ item.to_number }}',
+            lead_name: result.columns.includes('first_name') ? '{{ item.first_name }}' : '{{ item.lead_name }}',
+            email: '{{ item.email }}',
+            company: '{{ item.company }}',
+          },
         })
       }
       useCanvasStore.getState().addLog({
