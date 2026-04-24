@@ -173,11 +173,16 @@ const KIND_FIELDS: Record<string, FieldDef[]> = {
   ],
   'loop': [
     { key: 'items', label: 'Items expression', type: 'text',
-      placeholder: '{{ trigger.payload.items }}',
+      placeholder: '{{ prev.payload.items }}',
       hint: 'Must resolve to a JSON array at runtime.' },
     { key: 'concurrency', label: 'Concurrency (parallel items at once)', type: 'number' },
     { key: 'each', label: 'Per-item transform (JSON object of expressions)', type: 'textarea',
       placeholder: '{"email":"{{item.email}}","name":"{{item.name}}"}' },
+    { key: 'wait_for_event', label: 'Wait for event before next item', type: 'text',
+      placeholder: 'transcript.ready',
+      hint: 'Loop waits for this event from the bus before processing the next item. Leave blank to fire all at once.' },
+    { key: 'wait_timeout', label: 'Wait timeout (seconds)', type: 'number',
+      hint: 'Max seconds to wait per item before moving on. Default: 300.' },
   ],
   'split': [
     { key: 'mode', label: 'Split mode', type: 'select', options: ['fixed_n', 'fan_out'],
