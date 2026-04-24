@@ -207,7 +207,7 @@ class ChampVoiceDriver(HttpToolDriver):
                 # Terminal states — ElevenLabs uses: done, failed, no_answer, voicemail
                 # Anything that is not "in_progress" or "initiated" is terminal
                 call_status = d.get("status", "")
-                is_terminal = call_status not in ("in_progress", "initiated", "processing", "")
+                is_terminal = call_status not in ("in_progress", "in-progress", "initiated", "processing", "")
                 if is_terminal:
                     transcript = [
                         {
