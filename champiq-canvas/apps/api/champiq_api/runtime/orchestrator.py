@@ -279,10 +279,14 @@ class Orchestrator:
         errors: list[str] = []
 
         for index, item in enumerate(items):
-            # Loop outputs {"_item": <raw row>, "_index": N, ...rendered fields}
-            # Extract the raw row so {{ item.phone }} resolves to the CSV field.
-            raw_item = item.get("_item", item) if isinstance(item, dict) else item
-            raw_index = item.get("_index", index) if isinstance(item, dict) else index
+            # Loop outputs {"_item": <raw CSV row>, "_index": N, ...rendered fields}
+            # Unwrap so {{ item.phone }} resolves to the CSV field directly.
+            if isinstance(item, dict) and "_item" in item:
+                raw_item = item["_item"]
+                raw_index = item.get("_index", index)
+            else:
+                raw_item = item
+                raw_index = index
             per_item_input = {**direct_input, "item": raw_item, "index": raw_index}
 
             async def emit(topic: str, payload: dict[str, Any]) -> None:
