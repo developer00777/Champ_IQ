@@ -3,6 +3,7 @@ import { Send, Sparkles, Bot, User, Loader2, Paperclip, X, Key, ChevronDown, Che
 import { api } from '@/lib/api'
 import { applyWorkflowPatch } from '@/lib/applyPatch'
 import { useCanvasStore } from '@/store/canvasStore'
+import { saveCurrentCanvas } from '@/hooks/usePersistence'
 import type { ChatMessage } from '@/types'
 
 const SESSION_ID = 'default'
@@ -236,21 +237,19 @@ export function ChatPanel() {
         })
       }
 
-      // Auto-configure champvoice node to use item fields from CSV columns
+      // Auto-configure champvoice node — no contact fields in config, they flow from item
       const champvoiceNode = useCanvasStore.getState().nodes.find((n) => n.data?.kind === 'champvoice')
       if (champvoiceNode) {
         const existingConfig = (champvoiceNode.data.config as Record<string, unknown>) || {}
-        const hasPhone = result.columns.includes('phone')
         useCanvasStore.getState().updateNodeConfig(champvoiceNode.id, {
           ...existingConfig,
-          inputs: {
-            to_number: hasPhone ? '{{ item.phone }}' : '{{ item.to_number }}',
-            lead_name: result.columns.includes('first_name') ? '{{ item.first_name }}' : '{{ item.lead_name }}',
-            email: '{{ item.email }}',
-            company: '{{ item.company }}',
-          },
+          inputs: {},  // contact fields come from item.* automatically via loop fan-out
         })
       }
+
+      // Save immediately — don't wait for debounce so Run All gets correct configs
+      saveCurrentCanvas()
+
       useCanvasStore.getState().addLog({
         nodeId: 'upload',
         nodeName: 'File Upload',

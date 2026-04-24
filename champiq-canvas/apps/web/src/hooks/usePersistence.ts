@@ -24,6 +24,23 @@ export function saveCurrentCanvas() {
   api.saveCanvasState(nodes, edges).catch(() => {})
 }
 
+function loadCanvasFromStorage(id: string): { nodes: Node[]; edges: Edge[] } | null {
+  const raw = localStorage.getItem(`champiq:canvas:${id}`)
+  if (!raw) return null
+  try {
+    const { nodes, edges } = JSON.parse(raw) as { nodes: Node[]; edges: Edge[] }
+    // Deduplicate and strip orphan edges
+    const uniqueNodes = nodes.filter((n, i, arr) => arr.findIndex(x => x.id === n.id) === i)
+    const nodeIds = new Set(uniqueNodes.map(n => n.id))
+    const uniqueEdges = edges
+      .filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
+      .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+    return { nodes: uniqueNodes, edges: uniqueEdges }
+  } catch {
+    return null
+  }
+}
+
 export function usePersistence() {
   const { setNodes, setEdges } = useCanvasStore()
   const currentCanvasId = useCanvasStore((s) => s.currentCanvasId)
@@ -45,37 +62,41 @@ export function usePersistence() {
     }
   }, [])
 
-  // 2. Load canvas state whenever the active canvas ID changes.
+  // 2. Load canvas state whenever active canvas ID changes.
+  //    Clear first to avoid flashing stale content from previous canvas.
   useEffect(() => {
-    const raw = localStorage.getItem(`champiq:canvas:${currentCanvasId}`)
-    if (raw) {
-      try {
-        const { nodes, edges } = JSON.parse(raw) as { nodes: Node[]; edges: Edge[] }
-        const uniqueNodes = nodes.filter((n, i, arr) => arr.findIndex(x => x.id === n.id) === i)
-        const uniqueEdges = edges.filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
-        setNodes(uniqueNodes)
-        setEdges(uniqueEdges)
-        return
-      } catch { /* ignore corrupt data */ }
+    setNodes([])
+    setEdges([])
+
+    const saved = loadCanvasFromStorage(currentCanvasId)
+    if (saved) {
+      setNodes(saved.nodes)
+      setEdges(saved.edges)
+      return
     }
-    // Fallback: try the API (works when backend is running).
+
+    // Fallback: try the API.
     api.getCanvasState().then((s) => {
       if (s.nodes.length > 0 || s.edges.length > 0) {
         const uniqueNodes = (s.nodes as Node[]).filter((n, i, arr) => arr.findIndex(x => x.id === n.id) === i)
-        const uniqueEdges = (s.edges as Edge[]).filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
+        const nodeIds = new Set(uniqueNodes.map(n => n.id))
+        const uniqueEdges = (s.edges as Edge[])
+          .filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
+          .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
         setNodes(uniqueNodes)
         setEdges(uniqueEdges)
       }
     }).catch(() => {})
   }, [currentCanvasId, setNodes, setEdges])
 
-  // 3. Debounced save (3 s) whenever nodes change.
+  // 3. Debounced save on ANY store change (nodes, edges, or config updates).
+  //    1s debounce — short enough to capture config changes before Run All.
   useEffect(() => {
     const unsub = useCanvasStore.subscribe(
-      (s) => s.nodes,
+      (s) => [s.nodes, s.edges] as const,
       () => {
         if (debounceRef.current) clearTimeout(debounceRef.current)
-        debounceRef.current = setTimeout(saveCurrentCanvas, 3_000)
+        debounceRef.current = setTimeout(saveCurrentCanvas, 1_000)
       }
     )
     return () => {

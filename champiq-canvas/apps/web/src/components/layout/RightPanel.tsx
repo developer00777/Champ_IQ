@@ -86,23 +86,18 @@ const ACTION_FIELDS: Record<string, Record<string, FieldDef[]>> = {
   },
   champvoice: {
     initiate_call: [
-      { key: 'to_number', label: 'Phone number (E.164)', type: 'text', placeholder: '{{item.phone}}',
-        hint: 'E.164 format required, e.g. +15551234567' },
+      { key: 'agent_id', label: 'Agent ID override (optional)', type: 'text',
+        placeholder: '{{item.agent_id}}', hint: 'Overrides the credential default. Leave blank to use the credential agent.' },
+      { key: 'call_reason', label: 'Call reason (optional)', type: 'select',
+        options: ['', 'cold_outreach', 'email_follow_up', 'sequence_completed', 'replied_follow_up'],
+        hint: 'Shapes the AI agent opening. Phone, name, email and company flow in automatically from the loop.' },
     ],
     get_call_status: [
-      { key: 'call_id', label: 'Call ID', type: 'text', placeholder: '{{prev.callId}}',
-        hint: 'Use the callId field from initiate_call output (format: call_abc...)' },
+      { key: 'conversation_id', label: 'Conversation ID', type: 'text', placeholder: '{{prev.conversationId}}',
+        hint: 'ElevenLabs conversation ID from initiate_call output' },
     ],
-    list_calls: [
-      { key: 'contact', label: 'Contact phone (optional)', type: 'text',
-        placeholder: '{{item.phone}}', hint: 'E.164 phone to filter call history for one contact' },
-      { key: 'flow_id', label: 'Flow ID (optional)', type: 'text',
-        placeholder: '{{canvas.flow_id}}', hint: 'Filter calls belonging to a specific canvas flow' },
-    ],
-    cancel_call: [
-      { key: 'call_id', label: 'Call ID', type: 'text', placeholder: '{{prev.callId}}',
-        hint: 'Note: ElevenLabs does not support cancellation — this will return an error.' },
-    ],
+    list_calls: [],
+    cancel_call: [],
   },
   lakeb2b_pulse: {
     track_page: [
@@ -226,7 +221,7 @@ const KIND_FIELDS: Record<string, FieldDef[]> = {
       options: ['initiate_call', 'get_call_status', 'list_calls', 'cancel_call'],
       hint: 'The champiq-voice gateway routes this to ElevenLabs. No ChampServer login needed.' },
     { key: 'credential', label: 'ChampVoice credential', type: 'credential',
-      hint: 'Must contain gateway_url, api_key, elevenlabs_api_key, agent_id, phone_number_id, and optionally canvas_webhook_secret. Add via the Credentials panel.' },
+      hint: 'Must contain elevenlabs_api_key, agent_id, phone_number_id. Add via the Credentials panel.' },
   ],
   'lakeb2b_pulse': [
     { key: 'action', label: 'Action', type: 'select',
