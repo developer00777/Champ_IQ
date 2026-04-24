@@ -111,7 +111,17 @@ class ToolNodeExecutor(NodeExecutor):
             raise TypeError(f"{self.kind}: inputs must render to a dict, got {type(rendered).__name__}")
 
         cred_name = ctx.config.get("credential") or ""
-        credentials = await ctx.credentials.resolve(cred_name) if cred_name else {}
+        credentials: dict[str, Any] = {}
+        if cred_name:
+            try:
+                credentials = await ctx.credentials.resolve(cred_name)
+            except KeyError:
+                # Credential name in node config doesn't match DB — fall back to
+                # resolving any credential of the matching tool type.
+                try:
+                    credentials = await ctx.credentials.resolve_by_type(self.kind)
+                except (KeyError, AttributeError):
+                    pass
 
         result = await self._driver.invoke(action, rendered, credentials)
         return NodeResult(output={"data": result})

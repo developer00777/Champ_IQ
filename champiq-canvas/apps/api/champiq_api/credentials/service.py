@@ -93,3 +93,14 @@ class SqlCredentialResolver:
         if row is None:
             raise KeyError(f"Credential {name!r} not found")
         return json.loads(self._crypto.decrypt(row.data_encrypted))
+
+    async def resolve_by_type(self, type_: str) -> dict[str, Any]:
+        """Resolve the first credential of a given type — fallback when name doesn't match."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(CredentialTable).where(CredentialTable.type == type_).limit(1)
+            )
+            row = result.scalar_one_or_none()
+        if row is None:
+            raise KeyError(f"No credential of type {type_!r} found")
+        return json.loads(self._crypto.decrypt(row.data_encrypted))
