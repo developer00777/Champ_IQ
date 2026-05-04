@@ -72,6 +72,12 @@ class CronScheduler:
                 args=[workflow_id, trigger_id],
                 id=trigger_id,
                 replace_existing=True,
+                # max_instances=1 prevents the second uvicorn worker from firing
+                # the same cron job when both workers share the same in-process
+                # scheduler. coalesce=True collapses missed ticks into one run.
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=30,
             )
             self._jobs[trigger_id] = job.id
 

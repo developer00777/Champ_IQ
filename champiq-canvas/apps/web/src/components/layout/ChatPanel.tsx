@@ -8,6 +8,10 @@ import type { ChatMessage } from '@/types'
 
 const SESSION_ID = 'default'
 
+// Module-level set so patch application survives component unmount/remount
+// (useRef resets on remount, so patchApplied ref alone isn't enough).
+const _appliedPatchIds = new Set<number>()
+
 const SUGGESTIONS = [
   'Every weekday at 9am, list prospects from ChampGraph and call each one with ChampVoice.',
   'When a new lead submits a form (webhook), create them in ChampGraph and call immediately.',
@@ -509,9 +513,11 @@ function MessageBubble({ m }: { m: ChatMessage }) {
     }
     const { explanation: exp, patch } = parseAssistant(m.content)
     setExplanation(exp)
-    // Only apply patch once per bubble (handles history re-renders)
-    if (patch && !patchApplied.current) {
+    // Apply patch exactly once per message, even across unmount/remount cycles.
+    // _appliedPatchIds is module-level so it persists across React re-renders.
+    if (patch && !patchApplied.current && !_appliedPatchIds.has(m.id)) {
       patchApplied.current = true
+      _appliedPatchIds.add(m.id)
       const applied = applyWorkflowPatch(patch as Parameters<typeof applyWorkflowPatch>[0])
       const parts: string[] = []
       if (applied.added > 0) parts.push(`+${applied.added} nodes`)

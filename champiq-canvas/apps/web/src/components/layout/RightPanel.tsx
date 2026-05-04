@@ -6,7 +6,7 @@
  * dynamic input sections. Credential fields show a picker populated from
  * the global CredentialStore.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useCanvasStore } from '@/store/canvasStore'
 import { useCredentialStore, TOOL_CREDENTIAL_TYPE } from '@/store/credentialStore'
 import { X, Copy, Check, ChevronDown, ChevronUp } from '@/lib/icons'
@@ -340,6 +340,15 @@ export function RightPanel() {
   const [copied, setCopied] = useState(false)
   const [showRaw, setShowRaw] = useState(true)
   const [activeTab, setActiveTab] = useState<ConfigTab>('form')
+
+  // Reset panel UI state when the selected node changes so stale
+  // collapsed/expanded state from the previous node doesn't bleed through.
+  const prevNodeIdRef = useRef<string | null>(null)
+  if (selectedNodeId !== prevNodeIdRef.current) {
+    prevNodeIdRef.current = selectedNodeId
+    if (showRaw === false) setShowRaw(true)
+    if (activeTab !== 'form') setActiveTab('form')
+  }
 
   const node = nodes.find((n) => n.id === selectedNodeId)
   if (!node) return null

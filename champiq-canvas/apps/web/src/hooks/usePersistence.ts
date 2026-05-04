@@ -120,13 +120,13 @@ export function usePersistence() {
   }, [currentCanvasId, setNodes, setEdges])
 
   // 3. Debounced save on ANY store change (nodes, edges, or config updates).
-  //    1s debounce — short enough to capture config changes before Run All.
+  //    3s debounce — still fast enough for Run All, 3× fewer HTTP calls.
   useEffect(() => {
     const unsub = useCanvasStore.subscribe(
       (s) => [s.nodes, s.edges] as const,
       () => {
         if (debounceRef.current) clearTimeout(debounceRef.current)
-        debounceRef.current = setTimeout(saveCurrentCanvas, 1_000)
+        debounceRef.current = setTimeout(saveCurrentCanvas, 3_000)
       }
     )
     return () => {

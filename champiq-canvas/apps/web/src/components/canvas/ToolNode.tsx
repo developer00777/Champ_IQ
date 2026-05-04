@@ -229,11 +229,13 @@ function LegacyFormNode({
   useJobPolling(runtime.jobId, id, getToolId(manifest))
 
   useEffect(() => {
-    if (runtime.pendingRun) {
-      setNodeRuntime(id, { pendingRun: false })
-      handleAction()
-    }
-  }, [runtime.pendingRun]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!runtime.pendingRun || !action) return
+    setNodeRuntime(id, { pendingRun: false })
+    handleAction()
+  // handleAction reads action/formData which are stable within a render cycle;
+  // the only trigger we need is pendingRun flipping to true.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runtime.pendingRun, action, id])
 
   async function handleAction() {
     if (!action) return

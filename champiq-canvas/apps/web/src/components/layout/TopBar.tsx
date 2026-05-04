@@ -56,42 +56,49 @@ export function TopBar() {
     try {
       const { execution_id } = await api.runAdHoc(nodes, edges)
 
-      // Poll until finished
+      // Poll until finished — always resolves (success or error) so setRunning(false) is guaranteed
       const poll = async () => {
-        const exec = await api.getExecution(execution_id) as Record<string, unknown>
-        const status = exec.status as string
+        try {
+          const exec = await api.getExecution(execution_id) as Record<string, unknown>
+          const status = exec.status as string
 
-        if (status === 'running') {
-          setTimeout(poll, 1000)
-          return
-        }
+          if (status === 'running') {
+            setTimeout(poll, 1000)
+            return
+          }
 
-        // Fetch per-node results and update status indicators
-        const nodeRuns = await api.getNodeRuns(execution_id) as Array<Record<string, unknown>>
-        for (const run of nodeRuns) {
-          setNodeRuntime(run.node_id as string, {
-            status: run.status === 'success' ? 'success' : 'error',
-            output: run.output as Record<string, unknown>,
-            error: run.error as string | undefined,
+          // Fetch per-node results and update status indicators
+          const nodeRuns = await api.getNodeRuns(execution_id) as Array<Record<string, unknown>>
+          for (const run of nodeRuns) {
+            setNodeRuntime(run.node_id as string, {
+              status: run.status === 'success' ? 'success' : 'error',
+              output: run.output as Record<string, unknown>,
+              error: run.error as string | undefined,
+            })
+          }
+
+          // Only reset nodes that didn't run to idle — never reset nodes that succeeded
+          const ranIds = new Set(nodeRuns.map((r) => r.node_id as string))
+          if (ranIds.size > 0) {
+            for (const n of nodes) {
+              if (!ranIds.has(n.id)) setNodeRuntime(n.id, { status: 'idle' })
+            }
+          }
+
+          const finalStatus = status === 'success' ? 'success' : 'error'
+          addLog({
+            nodeId: 'run',
+            nodeName: 'Run All',
+            status: finalStatus,
+            message: status === 'success'
+              ? `Execution complete — ${nodeRuns.length} nodes ran`
+              : `Execution failed: ${(exec.error as string) ?? 'unknown error'}`,
           })
+        } catch (e) {
+          addLog({ nodeId: 'run', nodeName: 'Run All', status: 'error', message: String(e) })
+        } finally {
+          setRunning(false)
         }
-
-        // Mark any nodes not in nodeRuns (didn't execute) as idle
-        const ranIds = new Set(nodeRuns.map((r) => r.node_id as string))
-        for (const n of nodes) {
-          if (!ranIds.has(n.id)) setNodeRuntime(n.id, { status: 'idle' })
-        }
-
-        const finalStatus = status === 'success' ? 'success' : 'error'
-        addLog({
-          nodeId: 'run',
-          nodeName: 'Run All',
-          status: finalStatus,
-          message: status === 'success'
-            ? `Execution complete — ${nodeRuns.length} nodes ran`
-            : `Execution failed: ${(exec.error as string) ?? 'unknown error'}`,
-        })
-        setRunning(false)
       }
 
       setTimeout(poll, 800)

@@ -2,14 +2,25 @@ import { useEffect, useRef } from 'react'
 import { api } from '@/lib/api'
 import { useCanvasStore } from '@/store/canvasStore'
 
+const MAX_POLL_ATTEMPTS = 36 // 3 minutes at 5s intervals
+
 export function useJobPolling(jobId: string | undefined, nodeId: string, toolId: string) {
   const { setNodeRuntime, addLog } = useCanvasStore()
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const attemptsRef = useRef(0)
 
   useEffect(() => {
     if (!jobId) return
+    attemptsRef.current = 0
 
     intervalRef.current = setInterval(async () => {
+      if (attemptsRef.current++ >= MAX_POLL_ATTEMPTS) {
+        setNodeRuntime(nodeId, { status: 'error', error: 'Job timed out after 3 minutes' })
+        addLog({ nodeId, nodeName: toolId, status: 'error', message: `Job ${jobId} timed out` })
+        clearInterval(intervalRef.current!)
+        intervalRef.current = null
+        return
+      }
       try {
         const job = await api.getJob(jobId)
 
