@@ -234,29 +234,51 @@ champvoice action="cancel_call"
 
 ────────── lakeb2b_pulse (action selects which inputs apply) ──────────
 
+IMPORTANT: lakeb2b_pulse nodes ALWAYS need credential set to the lakeb2b
+credential name (e.g. "lakeb2b-pulse"). Never leave credential blank.
+
 lakeb2b_pulse action="track_page"
-  inputs.page_url      **required** ← {{ item.linkedin_url }}  (alias: url)
-  inputs.name                    ← <literal display name>
+  inputs.page_url      **required** ← <literal LinkedIn URL>  e.g. "https://www.linkedin.com/company/microsoft"
+                                       OR {{ item.linkedin_url }} when inside a loop body
+  inputs.name                    ← <literal display name>     e.g. "Microsoft"
   inputs.page_type               ← <literal: profile | company>
+  Output: { id, url, name, active, platform, page_type, external_id, ... }
+  Use {{ prev.data.id }} in downstream poll_now or subscribe_page nodes.
 
 lakeb2b_pulse action="list_tracked_pages"
   (no required inputs)
+  Output: { pages: [{id, url, name, active, ...}] }
 
-lakeb2b_pulse action="poll_page"
-  inputs.page_id       **required** ← {{ prev.page_id }}     (from track_page output)
+lakeb2b_pulse action="poll_now"
+  inputs.page_id       **required** ← {{ prev.data.id }}   (UUID from track_page output)
 
 lakeb2b_pulse action="list_posts"
-  inputs.page_id       **required** ← {{ prev.page_id }}
-  inputs.since                   ← <ISO 8601 datetime, e.g. "2026-01-01T00:00:00Z">
+  inputs.page_url      **required** ← <literal LinkedIn URL>  e.g. "https://www.linkedin.com/company/microsoft"
+                                       OR {{ item.linkedin_url }} when inside a loop body
+                                       ⚠ NEVER use page_id here — always use the full LinkedIn URL
+  inputs.limit                   ← <integer, default 20>
+  Output: { status: "ok", task_id: "scrape_xxx", count: N, posts: [{author, text, reactions, comments, url, posted_at, ...}] }
+          The backend blocks (up to 90s) waiting for the Chrome extension to scrape and deliver posts.
+          Downstream nodes CAN read {{ prev.data.posts }} — posts are fully resolved by the time the node completes.
+          Requires: ChampIQ Chrome extension installed, logged into LinkedIn, ChampIQ tab open in same browser.
 
-lakeb2b_pulse action="schedule_engagement"
-  inputs.post_id       **required** ← {{ item.post_id }}     (or {{ prev.post_id }})
-  inputs.action        **required** ← <literal: like | comment | connect | message>
-  inputs.comment_text            ← <literal text OR {{ ... }} expression>
-  inputs.stagger_minutes         ← <integer minutes between actions, default 15>
+lakeb2b_pulse action="subscribe_page"
+  inputs.page_id       **required** ← {{ prev.data.id }}   (UUID from track_page output)
+  inputs.auto_like               ← <literal: true | false>
+  inputs.auto_comment            ← <literal: true | false>
 
-lakeb2b_pulse action="get_engagement_status"
+lakeb2b_pulse action="generate_comment"
+  inputs.post_content  **required** ← {{ prev.data.posts[0].text }}
+                                       OR any string expression with the post text
+  Output: { comment: "..." }
+
+lakeb2b_pulse action="get_recent_activity"
+  inputs.limit                   ← <integer, default 20>
+  Output: { activities: [...] }
+
+lakeb2b_pulse action="get_analytics"
   (no required inputs)
+  Output: { total_likes, total_comments, total_posts_tracked, ... }
 
 ────────── champmail_reply (classifier — no `action` field) ──────────
 
@@ -388,9 +410,39 @@ champgraph:
   ⚠ Requires credential: champgraph-admin (same login as ChampMail backend — email + password).
 
 lakeb2b_pulse:
-  { "action": "track_page",  — OR: schedule_engagement, list_posts, get_engagement_status
-    "credential": "",
-    "inputs": { "page_url": "{{ item.linkedin_url }}" } }
+  ⚠ ALWAYS set credential to the lakeb2b credential name. Never blank.
+  ⚠ page_url takes a FULL LinkedIn URL — never a page_id UUID.
+
+  track_page (registers a LinkedIn page for engagement tracking):
+  { "action": "track_page",
+    "credential": "lakeb2b-pulse",
+    "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "name": "Microsoft" } }
+
+  list_posts (scrapes recent posts via Chrome extension — blocks until done, returns resolved posts):
+  { "action": "list_posts",
+    "credential": "lakeb2b-pulse",
+    "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "limit": 5 } }
+
+  subscribe_page (enable auto-like / auto-comment on new posts):
+  { "action": "subscribe_page",
+    "credential": "lakeb2b-pulse",
+    "inputs": { "page_id": "{{ prev.data.id }}", "auto_like": "true", "auto_comment": "true" } }
+
+  generate_comment (AI-generate a contextual comment for a post):
+  { "action": "generate_comment",
+    "credential": "lakeb2b-pulse",
+    "inputs": { "post_content": "{{ prev.data.posts[0].text }}" } }
+
+  poll_now (force B2B Pulse to check for new posts immediately):
+  { "action": "poll_now",
+    "credential": "lakeb2b-pulse",
+    "inputs": { "page_id": "{{ prev.data.id }}" } }
+
+  get_analytics (engagement summary):
+  { "action": "get_analytics", "credential": "lakeb2b-pulse", "inputs": {} }
+
+  get_recent_activity (audit log of likes/comments done):
+  { "action": "get_recent_activity", "credential": "lakeb2b-pulse", "inputs": { "limit": 20 } }
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NODE JSON SHAPE (always use this exact structure)
@@ -626,6 +678,99 @@ CRON ACTIVATION REMINDER:
   Any workflow with a trigger.cron node needs to be activated as a persistent workflow.
   After building, always tell the user: "Click the 'Activate' button (CalendarClock icon in the top bar)
   to register the cron schedule — the workflow won't fire automatically until activated."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LINKEDIN / B2B PULSE WORKFLOW PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PATTERN 1 — Track a specific LinkedIn page + fetch recent posts:
+  trigger.manual { "label": "Fetch LinkedIn posts", "items": [] }
+  → lakeb2b_pulse track_page {
+      "action": "track_page", "credential": "lakeb2b-pulse",
+      "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "name": "Microsoft" }
+    }
+  → lakeb2b_pulse list_posts {
+      "action": "list_posts", "credential": "lakeb2b-pulse",
+      "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "limit": 5 }
+    }
+  CRITICAL RULES:
+    - list_posts ALWAYS uses page_url (the full LinkedIn URL), NOT page_id.
+    - page_url in BOTH nodes must be the same literal URL string.
+    - The credential field MUST be set — use the name of the lakeb2b credential.
+    - list_posts blocks until the Chrome extension delivers posts (up to 90s).
+      Downstream nodes (set, llm, generate_comment) CAN use {{ prev.data.posts }}.
+    - Requires: ChampIQ extension installed, logged into LinkedIn, ChampIQ tab open.
+
+PATTERN 2 — Track page + auto-engage (like + AI comment on new posts):
+  trigger.manual { "label": "Enable LinkedIn engagement", "items": [] }
+  → lakeb2b_pulse track_page {
+      "action": "track_page", "credential": "lakeb2b-pulse",
+      "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "name": "Microsoft" }
+    }
+  → lakeb2b_pulse subscribe_page {
+      "action": "subscribe_page", "credential": "lakeb2b-pulse",
+      "inputs": { "page_id": "{{ prev.data.id }}", "auto_like": "true", "auto_comment": "true" }
+    }
+  subscribe_page uses page_id (UUID) from track_page output via {{ prev.data.id }}.
+  B2B Pulse will automatically like and AI-comment on new posts from this page.
+
+PATTERN 3 — Fetch posts + generate AI comment for the top post:
+  trigger.manual { "label": "Comment on latest post", "items": [] }
+  → lakeb2b_pulse track_page {
+      "action": "track_page", "credential": "lakeb2b-pulse",
+      "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "name": "Microsoft" }
+    }
+  → lakeb2b_pulse list_posts {
+      "action": "list_posts", "credential": "lakeb2b-pulse",
+      "inputs": { "page_url": "https://www.linkedin.com/company/microsoft", "limit": 3 }
+    }
+  → lakeb2b_pulse generate_comment {
+      "action": "generate_comment", "credential": "lakeb2b-pulse",
+      "inputs": { "post_content": "{{ prev.data.posts[0].text }}" }
+    }
+
+PATTERN 4 — Track multiple LinkedIn pages from a CSV (loop):
+  trigger.manual { "items": [] }
+  → csv.upload { "items": [], "filename": "companies.csv" }
+  → loop { "items": "{{ prev.items }}", "concurrency": 3 }
+    → lakeb2b_pulse track_page {
+        "action": "track_page", "credential": "lakeb2b-pulse",
+        "inputs": { "page_url": "{{ item.linkedin_url }}", "name": "{{ item.company }}" }
+      }
+    → lakeb2b_pulse subscribe_page {
+        "action": "subscribe_page", "credential": "lakeb2b-pulse",
+        "inputs": { "page_id": "{{ prev.data.id }}", "auto_like": "true", "auto_comment": "false" }
+      }
+  The CSV must have columns: linkedin_url, company.
+
+PATTERN 5 — Daily engagement analytics report (cron):
+  trigger.cron { "cron": "0 9 * * 1-5", "timezone": "UTC" }
+  → lakeb2b_pulse get_analytics { "action": "get_analytics", "credential": "lakeb2b-pulse", "inputs": {} }
+  → lakeb2b_pulse get_recent_activity {
+      "action": "get_recent_activity", "credential": "lakeb2b-pulse",
+      "inputs": { "limit": 50 }
+    }
+  Activate cron via the Activate button (CalendarClock icon in top bar).
+
+KEY RULES FOR ALL B2B PULSE WORKFLOWS:
+  1. credential is ALWAYS required — set it to the lakeb2b credential name (e.g. "lakeb2b-pulse").
+  2. list_posts → uses page_url (full LinkedIn URL string), NOT page_id.
+  3. subscribe_page, poll_now → use page_id (UUID) from track_page via {{ prev.data.id }}.
+  4. Static LinkedIn URLs are LITERALS — write them as plain strings like
+     "https://www.linkedin.com/company/microsoft", not expressions.
+  5. When user says "track X's LinkedIn page", use the known URL format:
+     - Company: https://www.linkedin.com/company/<slug>
+     - Person:  https://www.linkedin.com/in/<username>
+  6. VALID lakeb2b_pulse actions (EXACTLY these — do NOT invent others):
+     track_page, list_tracked_pages, list_posts, poll_now, subscribe_page,
+     generate_comment, get_recent_activity, get_analytics, agent_status
+     ❌ get_post_details, fetch_posts, scrape_page, get_post, list_engagements
+        — these DO NOT EXIST. Using them causes a node error.
+  7. list_posts BLOCKS until the Chrome extension delivers posts (up to 90s) and returns
+     { status: "ok", posts: [...], count: N }. Downstream nodes CAN read {{ prev.data.posts }}.
+     You CAN add a loop, set, llm, or generate_comment node after list_posts.
+     Example: track_page → list_posts { limit: 3 } → generate_comment { post_content: "{{ prev.data.posts[0].text }}" }
+     Requires: ChampIQ Chrome extension installed, logged into LinkedIn, ChampIQ tab open.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPLY FORMAT — MUST FOLLOW EXACTLY

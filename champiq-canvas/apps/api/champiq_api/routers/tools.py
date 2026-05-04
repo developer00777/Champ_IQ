@@ -94,10 +94,11 @@ async def run_action(tool: str, action: str, payload: dict = {}, db: AsyncSessio
 
     container = get_container()
 
-    # Champmail and champgraph are inline now — no entries in the drivers dict.
+    # champmail, champgraph, and lakeb2b_pulse are inline now — no entries in the drivers dict.
     is_champmail = tool == "champmail"
     is_champgraph = tool == "champgraph"
-    inline_tool = is_champmail or is_champgraph
+    is_b2bpulse = tool == "lakeb2b_pulse"
+    inline_tool = is_champmail or is_champgraph or is_b2bpulse
     driver = None
     if not inline_tool:
         driver = container.drivers.get(tool)
@@ -133,6 +134,32 @@ async def run_action(tool: str, action: str, payload: dict = {}, db: AsyncSessio
                 result = await _invoke_champmail_local(action, inputs)
             elif is_champgraph:
                 result = await container.champgraph.invoke(action, inputs)
+            elif is_b2bpulse:
+                # Resolve credentials — same pattern as champmail/champgraph
+                b2b_credentials: dict = {}
+                b2b_cred_id: int | None = None
+                cred_ref = payload.get("credential_id") or payload.get("credential")
+                if cred_ref is not None:
+                    try:
+                        if isinstance(cred_ref, int):
+                            from ..models import CredentialTable  # noqa: PLC0415
+                            row = await db.get(CredentialTable, cred_ref)
+                            if row:
+                                b2b_credentials = json.loads(container.crypto.decrypt(row.data_encrypted))
+                                b2b_cred_id = row.id
+                        else:
+                            b2b_credentials = await container.credential_resolver.resolve(str(cred_ref))
+                            # _credential_id is injected by SqlCredentialResolver.resolve()
+                            _cid = b2b_credentials.get("_credential_id") or b2b_credentials.get("credential_id")
+                            if _cid:
+                                b2b_cred_id = int(_cid)
+                    except (KeyError, ValueError):
+                        pass
+                from ..b2bpulse.executor import B2BPulseLocalExecutor  # noqa: PLC0415
+                exec_instance = container.registry.get("lakeb2b_pulse")
+                if not isinstance(exec_instance, B2BPulseLocalExecutor):
+                    raise RuntimeError("B2BPulseLocalExecutor not registered")
+                result = await exec_instance._dispatch(action, inputs, b2b_credentials, b2b_cred_id)
             else:
                 result = await driver.invoke(action, inputs, credentials)
             job_store[job_id] = {"job_id": job_id, "status": "done", "progress": 100, "result": result}
@@ -141,7 +168,7 @@ async def run_action(tool: str, action: str, payload: dict = {}, db: AsyncSessio
             err_msg = str(exc) or f"{type(exc).__name__}: {repr(exc)}"
             if not err_msg.strip():
                 err_msg = traceback.format_exc()
-            job_store[job_id] = {"job_id": job_id, "status": "failed", "progress": 100, "result": {"error": err_msg}}
+            job_store[job_id] = {"job_id": job_id, "status": "error", "progress": 100, "result": {"error": err_msg}}
 
     job_store[job_id] = {"job_id": job_id, "status": "running", "progress": 0, "result": None, "created_at": datetime.now(timezone.utc).isoformat()}
     asyncio.create_task(_run())
