@@ -49,7 +49,15 @@ class HttpToolDriver(ABC):
             raise KeyError(f"{self.tool_id}: unknown action {action!r}")
 
         method = spec.get("method", "POST").upper()
-        path = spec.get("path", "").format(**{k: _url_safe(v) for k, v in inputs.items() if isinstance(v, (str, int))})
+        path_template = spec.get("path", "")
+        safe_inputs = {k: _url_safe(v) for k, v in inputs.items() if isinstance(v, (str, int))}
+        try:
+            path = path_template.format(**safe_inputs)
+        except KeyError as missing:
+            raise ValueError(
+                f"{self.tool_id}.{action}: missing required path param {missing} — "
+                f"inputs provided: {list(safe_inputs.keys())}"
+            ) from None
         url = f"{self._base_url}{path}"
         headers = self._build_headers(spec.get("auth", "none"), credentials)
 
@@ -57,14 +65,17 @@ class HttpToolDriver(ABC):
         json_payload = None
         data_payload = None
         params = None
+        import re
+        path_param_keys = set(re.findall(r'\{(\w+)\}', path_template))
         if method in {"GET", "DELETE"}:
-            params = {k: v for k, v in inputs.items() if v is not None}
+            params = {k: v for k, v in inputs.items() if v is not None and k not in path_param_keys}
         elif body_kind == "json":
             json_payload = inputs
         elif body_kind == "form":
             data_payload = inputs
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        timeout = httpx.Timeout(connect=10.0, read=self._timeout, write=10.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(
                 method, url, headers=headers, json=json_payload, data=data_payload, params=params
             )
@@ -105,13 +116,31 @@ class ToolNodeExecutor(NodeExecutor):
             raise ValueError(f"{self.kind}: node is missing 'action' in config")
 
         raw_inputs = ctx.config.get("inputs", {}) or {}
-        # Merge upstream input under an 'input' key for expression access.
         rendered = ctx.render(raw_inputs)
         if not isinstance(rendered, dict):
             raise TypeError(f"{self.kind}: inputs must render to a dict, got {type(rendered).__name__}")
 
+        # Merge the loop item fields directly into inputs so contact data
+        # (phone, email, first_name, company etc.) flows through automatically
+        # without needing explicit expressions in the node config.
+        expr_ctx = ctx.expression_context()
+        item = expr_ctx.get("item")
+        if isinstance(item, dict):
+            # Item fields are the base; node config inputs override them
+            rendered = {**item, **rendered}
+
         cred_name = ctx.config.get("credential") or ""
-        credentials = await ctx.credentials.resolve(cred_name) if cred_name else {}
+        credentials: dict[str, Any] = {}
+        if cred_name:
+            try:
+                credentials = await ctx.credentials.resolve(cred_name)
+            except KeyError:
+                # Credential name in node config doesn't match DB — fall back to
+                # resolving any credential of the matching tool type.
+                try:
+                    credentials = await ctx.credentials.resolve_by_type(self.kind)
+                except (KeyError, AttributeError):
+                    pass
 
         result = await self._driver.invoke(action, rendered, credentials)
         return NodeResult(output={"data": result})

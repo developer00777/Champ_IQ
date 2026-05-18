@@ -29,7 +29,15 @@ from ..core.interfaces import (
     NodeResult,
 )
 from ..models import ExecutionTable, NodeRunTable, WorkflowTable
+from .fan_out import (
+    CADENCE_KEY,
+    FAN_OUT_ITEMS_KEY,
+    FanOutItem,
+    envelope_from_chained_output,
+    envelope_from_loop_output,
+)
 from .registry import NodeRegistry
+from .memory_collector import collect_execution_memory
 
 log = logging.getLogger(__name__)
 
@@ -49,12 +57,14 @@ class Orchestrator:
         credentials: CredentialResolver,
         expressions: ExpressionEvaluator,
         events: EventBus,
+        graphiti_client: Any = None,
     ) -> None:
         self._session_factory = session_factory
         self._registry = registry
         self._credentials = credentials
         self._expressions = expressions
         self._events = events
+        self._graphiti = graphiti_client
 
     # -- Public entry points ---------------------------------------------
 
@@ -153,6 +163,9 @@ class Orchestrator:
         # loop_context[node_id] = list of items from an upstream loop node,
         # so the downstream node can be fanned-out per item.
         loop_context: dict[str, list[Any]] = {}
+        # loop_cadence[node_id] = cadence dict from the upstream loop's output
+        # (mode, pace_seconds, jitter, etc.). Read by _execute_node_fan_out.
+        loop_cadence: dict[str, dict[str, Any]] = {}
         skipped: set[str] = set()
 
         # BFS layer-by-layer so parallel siblings run concurrently.
@@ -179,6 +192,7 @@ class Orchestrator:
                             direct_input=inputs.get(node_id, {}),
                             trigger_payload=effective_trigger,
                             items=items,
+                            cadence=loop_cadence.get(node_id),
                         )
                     else:
                         result = await self._execute_node(
@@ -230,15 +244,24 @@ class Orchestrator:
                 chosen_edges = _choose_edges(outgoing.get(node_id, []), result.branches)
 
                 # Detect if this node produced loop items that should be fanned out.
-                # A loop node (kind == "loop") outputs {"items": [...], "count": N}.
-                # Propagate those items to downstream nodes so they execute per-item.
+                # A loop node (kind == "loop") outputs {"items": [...], "count": N,
+                # "_cadence": {mode,pace_seconds,...}}. A chained fan-out node emits
+                # {FAN_OUT_ITEMS_KEY: [<envelope_payload>, ...]} where each payload
+                # carries the original loop row + the node's per-item output —
+                # see fan_out.FanOutItem.to_chain_payload.
                 produced_items: Optional[list[Any]] = None
+                produced_cadence: Optional[dict[str, Any]] = None
                 if node_kind == "loop" and result.output.get("items") is not None:
                     produced_items = result.output["items"]
-                # Also fan-out if this node itself was fanned out — pass the
-                # aggregated per-item results list forward.
-                elif result.output.get("_fan_out_items") is not None:
-                    produced_items = result.output["_fan_out_items"]
+                    produced_cadence = result.output.get(CADENCE_KEY)
+                elif result.output.get(FAN_OUT_ITEMS_KEY) is not None:
+                    produced_items = result.output[FAN_OUT_ITEMS_KEY]
+                    # Carry the cadence forward so chained fan-outs keep the same pacing.
+                    produced_cadence = result.output.get(CADENCE_KEY)
+
+                log.info("[orchestrator] node %s done | kind=%s | produced_items=%s | chosen_edges=%s",
+                         node_id, node_kind, len(produced_items) if produced_items is not None else None,
+                         [e["target"] for e in chosen_edges])
 
                 for edge in chosen_edges:
                     target = edge["target"]
@@ -247,11 +270,18 @@ class Orchestrator:
                     inputs[target] = {**inputs.get(target, {}), **result.output}
                     if produced_items is not None:
                         loop_context[target] = produced_items
-                    if _all_parents_done(target, incoming, results, skipped):
+                        if produced_cadence is not None:
+                            loop_cadence[target] = produced_cadence
+                    parents_done = _all_parents_done(target, incoming, results, skipped)
+                    log.info("[orchestrator] edge %s->%s | parents_done=%s", node_id, target, parents_done)
+                    if parents_done:
                         pending.add(target)
 
         final_status = "error" if any(r.output.get("error") for r in results.values()) else "success"
         await self._finalize_execution(execution_id, final_status, results)
+        asyncio.create_task(collect_execution_memory(
+            execution_id, self._session_factory, self._graphiti,
+        ))
 
     async def _execute_node_fan_out(
         self,
@@ -262,8 +292,14 @@ class Orchestrator:
         direct_input: dict[str, Any],
         trigger_payload: dict[str, Any],
         items: list[Any],
+        cadence: Optional[dict[str, Any]] = None,
     ) -> NodeResult:
-        """Run a node once per item in a loop's output, injecting item + index."""
+        """Run a node once per item in a loop's output.
+
+        `cadence` controls timing — see LoopExecutor docstring for fields. When
+        cadence is None or mode='sequential' (the historical default for an
+        unconfigured loop), items run one-after-another with no delay.
+        """
         node_id = node["id"]
         data = node.get("data", {}) or {}
         node_kind = data.get("kind") or data.get("toolId") or node.get("type") or "unknown"
@@ -271,11 +307,43 @@ class Orchestrator:
 
         from ..core.interfaces import NodeContext as _NC  # local to avoid circular
 
-        item_results: list[dict[str, Any]] = []
-        errors: list[str] = []
+        # Resolve cadence with safe defaults.
+        cadence = cadence or {}
+        mode = (cadence.get("mode") or "sequential").lower()
+        concurrency = max(int(cadence.get("concurrency", 1) or 1), 1)
+        pace_seconds = max(int(cadence.get("pace_seconds", 0) or 0), 0)
+        initial_delay = max(int(cadence.get("initial_delay_seconds", 0) or 0), 0)
+        jitter = max(int(cadence.get("jitter_seconds", 0) or 0), 0)
+        stop_on_error = bool(cadence.get("stop_on_error", False))
 
-        for index, item in enumerate(items):
-            per_item_input = {**direct_input, "item": item, "index": index}
+        # Pre-allocated so all three runners can write at the right index.
+        item_results: list[dict[str, Any]] = [None] * len(items)  # type: ignore[list-item]
+        errors: list[str] = []
+        aborted = False
+
+        # Start a single node_run row for the fan-out node so the frontend can see output
+        run_row = await self._start_node_run(execution_id, node_id, node_kind, direct_input)
+
+        async def _run_one(index: int, item: Any) -> None:
+            nonlocal aborted
+            if aborted:
+                item_results[index] = {"skipped": True, "reason": "aborted by stop_on_error"}
+                return
+            # Build the per-item envelope. Two cases:
+            #   1. First hop after a loop: items are {_item, _index, ...} envelopes
+            #      directly emitted by LoopExecutor — `prev` is empty.
+            #   2. Chained fan-out (loop → A → B): items already carry the original
+            #      _item AND the upstream's per-item _prev (written by to_chain_payload
+            #      on the previous hop) — recover both so {{ item.X }} keeps resolving
+            #      to the original CSV row at every depth.
+            if isinstance(item, dict) and "_item" in item:
+                envelope = envelope_from_chained_output(item, index)
+            else:
+                envelope = envelope_from_loop_output(item, index)
+            raw_item = envelope.item
+            raw_index = envelope.index
+            raw_prev = envelope.prev
+            per_item_input = {**direct_input, "item": raw_item, "index": raw_index, "prev": raw_prev}
 
             async def emit(topic: str, payload: dict[str, Any]) -> None:
                 await self._publish(topic, {"execution_id": execution_id, "node_id": node_id, **payload})
@@ -293,38 +361,103 @@ class Orchestrator:
                 events=self._events,
                 emit=emit,
             )
-            # Patch expression context to include item + index at top level.
-            original_expr_ctx = ctx.expression_context
 
-            def _patched_ctx(item=item, index=index, ctx=ctx):
-                base = {
+            def _patched_ctx(envelope=envelope, ctx=ctx):
+                # `prev` resolves to the immediately-upstream node's per-item
+                # output — NOT the upstream node's full envelope. This is the
+                # invariant the FanOutItem dataclass enforces.
+                return {
                     "node": ctx.upstream,
-                    "prev": ctx.input,
+                    "prev": envelope.prev,
                     "trigger": ctx.trigger,
                     "execution_id": ctx.execution_id,
-                    "item": item,
-                    "index": index,
+                    "item": envelope.item,
+                    "index": envelope.index,
                 }
-                return base
 
             ctx.expression_context = _patched_ctx  # type: ignore[method-assign]
 
             executor = self._registry.get(node_kind)
             try:
                 r = await executor.execute(ctx)
-                item_results.append(r.output)
+                # Wrap the executor's output so the next downstream fan-out can
+                # recover the original loop row + this node's output as `prev`.
+                item_results[index] = envelope.to_chain_payload(r.output)
             except Exception as err:  # noqa: BLE001
                 log.warning("fan-out node %s item %d failed: %s", node_id, index, err)
-                errors.append(str(err))
-                item_results.append({"error": str(err), "item": item})
+                errors.append(f"item[{index}]: {err}")
+                # Even on failure, propagate the original item so downstream
+                # nodes that handle the error can still see what they were
+                # supposed to be processing.
+                item_results[index] = envelope.to_chain_payload({"error": str(err), "item": raw_item})
+                if stop_on_error:
+                    aborted = True
+
+        def _gap_seconds() -> float:
+            """pace_seconds + uniform random jitter in [-jitter, +jitter]."""
+            if jitter <= 0:
+                return float(pace_seconds)
+            import random  # noqa: PLC0415 — std-lib, only when jitter requested
+            return max(0.0, pace_seconds + random.uniform(-jitter, jitter))
+
+        if initial_delay > 0:
+            await asyncio.sleep(initial_delay)
+
+        # --- Dispatch by mode ----------------------------------------------------
+        if mode == "parallel" and concurrency > 1:
+            sem = asyncio.Semaphore(concurrency)
+
+            async def _guarded(index: int, item: Any) -> None:
+                async with sem:
+                    await _run_one(index, item)
+
+            await asyncio.gather(*[_guarded(i, it) for i, it in enumerate(items)])
+
+        elif mode == "paced":
+            # Each item starts at last_start + pace (+ jitter), regardless of body
+            # duration. We launch each as a background task so a slow body doesn't
+            # delay the next start; we await all of them at the end.
+            tasks: list[asyncio.Task[None]] = []
+            for i, it in enumerate(items):
+                if aborted:
+                    item_results[i] = {"skipped": True, "reason": "aborted by stop_on_error"}
+                    continue
+                if i > 0:
+                    await asyncio.sleep(_gap_seconds())
+                tasks.append(asyncio.create_task(_run_one(i, it)))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        else:
+            # mode == "sequential" (or "parallel" with concurrency=1) — historical
+            # behavior: each item fully completes before the next starts.
+            for i, it in enumerate(items):
+                if aborted:
+                    item_results[i] = {"skipped": True, "reason": "aborted by stop_on_error"}
+                    continue
+                if i > 0 and pace_seconds > 0:
+                    # Even sequential mode honors pace_seconds if set — gap between
+                    # the end of one body and the start of the next.
+                    await asyncio.sleep(_gap_seconds())
+                await _run_one(i, it)
 
         output: dict[str, Any] = {
-            "_fan_out_items": item_results,
+            FAN_OUT_ITEMS_KEY: item_results,
             "count": len(item_results),
             "items": item_results,
         }
+        # Carry cadence forward so chained fan-outs (loop → A → B) share pacing.
+        if cadence:
+            output[CADENCE_KEY] = cadence
         if errors:
             output["errors"] = errors
+        if aborted:
+            output["aborted"] = True
+
+        # Persist to DB so frontend getNodeRuns() can show output + transcript
+        final_status = "error" if errors else "success"
+        await self._finish_node_run(run_row.id, final_status, output, errors[0] if errors else None, 0)
+
         return NodeResult(output=output)
 
     async def _execute_node(

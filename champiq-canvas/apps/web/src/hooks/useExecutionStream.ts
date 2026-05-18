@@ -1,6 +1,10 @@
 import { useEffect } from 'react'
 import { useCanvasStore } from '@/store/canvasStore'
 
+// If the WebSocket drops mid-execution and we never receive execution.finished,
+// isRunningAll gets stuck as true forever. After each reconnect, check whether
+// any node is still showing 'running' — if not, force-reset the flag.
+
 export function useExecutionStream() {
   useEffect(() => {
     const url = new URL('/ws/events', window.location.origin)
@@ -19,7 +23,11 @@ export function useExecutionStream() {
         }
       }
       ws.onclose = () => {
-        retry = setTimeout(open, 2000)
+        // On reconnect, check for stuck isRunningAll after a short delay
+        retry = setTimeout(() => {
+          resetStaleRunningAll()
+          open()
+        }, 2000)
       }
       ws.onerror = () => ws?.close()
     }
@@ -30,6 +38,19 @@ export function useExecutionStream() {
       ws?.close()
     }
   }, [])
+}
+
+// If isRunningAll is true but no node is actually in 'running' state,
+// the execution.finished event was missed — reset the flag.
+function resetStaleRunningAll() {
+  const store = useCanvasStore.getState()
+  if (!store.isRunningAll) return
+  const anyRunning = store.nodes.some(
+    (n) => store.nodeRuntimeStates[n.id]?.status === 'running'
+  )
+  if (!anyRunning) {
+    store.setIsRunningAll(false)
+  }
 }
 
 function handle(msg: Record<string, unknown>) {

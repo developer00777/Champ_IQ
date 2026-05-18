@@ -5,8 +5,19 @@ import { useTheme } from '@/hooks/useTheme'
 import { getToolId } from '@/lib/manifest'
 import { saveCurrentCanvas } from '@/hooks/usePersistence'
 import { Button } from '@/components/ui/button'
-import { Save, Play, ZoomIn, ZoomOut, Moon, Sun, Check, Loader2 } from '@/lib/icons'
+import { Save, Play, ZoomIn, ZoomOut, Moon, Sun, Check, Loader2, CalendarClock, Power, Settings } from '@/lib/icons'
+import { useViewStore } from '@/store/viewStore'
 import { useReactFlow } from '@xyflow/react'
+import type { Node } from '@xyflow/react'
+
+function extractCronTriggers(nodes: Node[]): Record<string, unknown>[] {
+  return nodes
+    .filter((n) => (n.data as Record<string, unknown>).kind === 'trigger.cron')
+    .map((n) => {
+      const cfg = ((n.data as Record<string, unknown>).config as Record<string, unknown>) ?? {}
+      return { id: n.id, kind: 'cron', cron: cfg.cron ?? '0 9 * * 1-5', timezone: cfg.timezone ?? 'UTC' }
+    })
+}
 
 export function TopBar() {
   const { canvasName, nodes, edges, toolHealthStatus, manifests, setCanvasName, setNodeRuntime, addLog } = useCanvasStore()
@@ -15,6 +26,8 @@ export function TopBar() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [running, setRunning] = useState(false)
+  const [activating, setActivating] = useState(false)
+  const [activeWorkflowId, setActiveWorkflowId] = useState<number | null>(null)
 
   async function handleSave() {
     if (saving) return
@@ -43,42 +56,49 @@ export function TopBar() {
     try {
       const { execution_id } = await api.runAdHoc(nodes, edges)
 
-      // Poll until finished
+      // Poll until finished — always resolves (success or error) so setRunning(false) is guaranteed
       const poll = async () => {
-        const exec = await api.getExecution(execution_id) as Record<string, unknown>
-        const status = exec.status as string
+        try {
+          const exec = await api.getExecution(execution_id) as Record<string, unknown>
+          const status = exec.status as string
 
-        if (status === 'running') {
-          setTimeout(poll, 1000)
-          return
-        }
+          if (status === 'running') {
+            setTimeout(poll, 1000)
+            return
+          }
 
-        // Fetch per-node results and update status indicators
-        const nodeRuns = await api.getNodeRuns(execution_id) as Array<Record<string, unknown>>
-        for (const run of nodeRuns) {
-          setNodeRuntime(run.node_id as string, {
-            status: run.status === 'success' ? 'success' : 'error',
-            output: run.output as Record<string, unknown>,
-            error: run.error as string | undefined,
+          // Fetch per-node results and update status indicators
+          const nodeRuns = await api.getNodeRuns(execution_id) as Array<Record<string, unknown>>
+          for (const run of nodeRuns) {
+            setNodeRuntime(run.node_id as string, {
+              status: run.status === 'success' ? 'success' : 'error',
+              output: run.output as Record<string, unknown>,
+              error: run.error as string | undefined,
+            })
+          }
+
+          // Only reset nodes that didn't run to idle — never reset nodes that succeeded
+          const ranIds = new Set(nodeRuns.map((r) => r.node_id as string))
+          if (ranIds.size > 0) {
+            for (const n of nodes) {
+              if (!ranIds.has(n.id)) setNodeRuntime(n.id, { status: 'idle' })
+            }
+          }
+
+          const finalStatus = status === 'success' ? 'success' : 'error'
+          addLog({
+            nodeId: 'run',
+            nodeName: 'Run All',
+            status: finalStatus,
+            message: status === 'success'
+              ? `Execution complete — ${nodeRuns.length} nodes ran`
+              : `Execution failed: ${(exec.error as string) ?? 'unknown error'}`,
           })
+        } catch (e) {
+          addLog({ nodeId: 'run', nodeName: 'Run All', status: 'error', message: String(e) })
+        } finally {
+          setRunning(false)
         }
-
-        // Mark any nodes not in nodeRuns (didn't execute) as idle
-        const ranIds = new Set(nodeRuns.map((r) => r.node_id as string))
-        for (const n of nodes) {
-          if (!ranIds.has(n.id)) setNodeRuntime(n.id, { status: 'idle' })
-        }
-
-        const finalStatus = status === 'success' ? 'success' : 'error'
-        addLog({
-          nodeId: 'run',
-          nodeName: 'Run All',
-          status: finalStatus,
-          message: status === 'success'
-            ? `Execution complete — ${nodeRuns.length} nodes ran`
-            : `Execution failed: ${(exec.error as string) ?? 'unknown error'}`,
-        })
-        setRunning(false)
       }
 
       setTimeout(poll, 800)
@@ -86,6 +106,43 @@ export function TopBar() {
       for (const n of nodes) setNodeRuntime(n.id, { status: 'idle' })
       addLog({ nodeId: 'run', nodeName: 'Run All', status: 'error', message: String(e) })
       setRunning(false)
+    }
+  }
+
+  async function handleActivate() {
+    if (activating || nodes.length === 0) return
+    setActivating(true)
+    addLog({ nodeId: 'activate', nodeName: 'Activate', status: 'running', message: 'Registering workflow as scheduled…' })
+    try {
+      const triggers = extractCronTriggers(nodes)
+      const body = {
+        name: canvasName,
+        description: `Activated from canvas: ${canvasName}`,
+        active: true,
+        nodes,
+        edges,
+        triggers,
+      }
+      let wf: Record<string, unknown>
+      if (activeWorkflowId) {
+        wf = await api.updateWorkflow(activeWorkflowId, body) as Record<string, unknown>
+      } else {
+        wf = await api.createWorkflow(body) as Record<string, unknown>
+        setActiveWorkflowId(wf.id as number)
+      }
+      const hasCron = triggers.length > 0
+      addLog({
+        nodeId: 'activate',
+        nodeName: 'Activate',
+        status: 'success',
+        message: hasCron
+          ? `Workflow #${wf.id as number} active — ${triggers.length} cron schedule(s) registered`
+          : `Workflow #${wf.id as number} active (no cron triggers — use Run All to fire manually)`,
+      })
+    } catch (e) {
+      addLog({ nodeId: 'activate', nodeName: 'Activate', status: 'error', message: String(e) })
+    } finally {
+      setActivating(false)
     }
   }
 
@@ -137,6 +194,15 @@ export function TopBar() {
         </Button>
         <Button
           variant="ghost" size="sm"
+          onClick={() => useViewStore.getState().setView('settings')}
+          aria-label="Open settings"
+          title="Open settings"
+          style={{ color: 'var(--text-2)' }}
+        >
+          <Settings size={14} className="mr-1" /> Settings
+        </Button>
+        <Button
+          variant="ghost" size="sm"
           onClick={handleRunAll}
           disabled={running || nodes.length === 0}
           aria-label="Run all nodes"
@@ -145,6 +211,20 @@ export function TopBar() {
           {running
             ? <><Loader2 size={14} className="mr-1 animate-spin" /> Running…</>
             : <><Play size={14} className="mr-1" /> Run All</>}
+        </Button>
+        <Button
+          variant="ghost" size="sm"
+          onClick={handleActivate}
+          disabled={activating || nodes.length === 0}
+          aria-label="Activate as scheduled workflow"
+          title={activeWorkflowId ? `Re-sync workflow #${activeWorkflowId}` : 'Register cron triggers and activate workflow'}
+          style={{ color: activating ? '#a78bfa' : activeWorkflowId ? '#4ade80' : 'var(--text-2)' }}
+        >
+          {activating
+            ? <><Loader2 size={14} className="mr-1 animate-spin" /> Activating…</>
+            : activeWorkflowId
+              ? <><Power size={14} className="mr-1" /> Active</>
+              : <><CalendarClock size={14} className="mr-1" /> Activate</>}
         </Button>
         <Button
           size="sm"

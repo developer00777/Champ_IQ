@@ -6,232 +6,24 @@
  * dynamic input sections. Credential fields show a picker populated from
  * the global CredentialStore.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useCanvasStore } from '@/store/canvasStore'
 import { useCredentialStore, TOOL_CREDENTIAL_TYPE } from '@/store/credentialStore'
 import { X, Copy, Check, ChevronDown, ChevronUp } from '@/lib/icons'
 import { getNodeMeta } from '@/lib/manifest'
 import type { ChampIQManifest } from '@/types'
+import { CsvUploadConfig } from '@/components/canvas/CsvUploadConfig'
+import {
+  ACTION_FIELDS,
+  KIND_FIELDS,
+  TOOL_KINDS_WITH_ACTIONS,
+  type FieldDef,
+} from '@/lib/nodeFieldSchemas'
 
-// ── Per-kind static field definitions ────────────────────────────────────────
+// Schemas live in lib/nodeFieldSchemas.ts — pure data, extracted so the panel
+// itself stays focused on rendering. See that file for the full list of
+// per-kind / per-action field definitions.
 
-interface FieldDef {
-  key: string
-  label: string
-  type: 'text' | 'textarea' | 'number' | 'select' | 'json' | 'credential'
-  options?: string[]
-  placeholder?: string
-  hint?: string
-}
-
-// For tool nodes: action → specific input fields shown when that action is selected
-const ACTION_FIELDS: Record<string, Record<string, FieldDef[]>> = {
-  champmail: {
-    add_prospect: [
-      { key: 'email', label: 'Email', type: 'text', placeholder: '{{item.email}}' },
-      { key: 'first_name', label: 'First name', type: 'text', placeholder: '{{item.first_name}}' },
-      { key: 'last_name', label: 'Last name', type: 'text', placeholder: '{{item.last_name}}' },
-      { key: 'company', label: 'Company', type: 'text', placeholder: '{{item.company}}' },
-    ],
-    start_sequence: [
-      { key: 'email', label: 'Prospect email', type: 'text', placeholder: '{{item.email}}' },
-      { key: 'sequence_id', label: 'Sequence ID', type: 'text', placeholder: 'seq_abc123' },
-    ],
-    enroll_sequence: [
-      { key: 'email', label: 'Prospect email', type: 'text', placeholder: '{{item.email}}' },
-      { key: 'sequence_id', label: 'Sequence ID', type: 'text', placeholder: 'seq_abc123' },
-    ],
-    pause_sequence: [
-      { key: 'email', label: 'Prospect email', type: 'text', placeholder: '{{item.email}}' },
-    ],
-    send_single_email: [
-      { key: 'email', label: 'To email', type: 'text', placeholder: '{{item.email}}' },
-      { key: 'subject', label: 'Subject', type: 'text', placeholder: 'Following up…' },
-      { key: 'body', label: 'Body', type: 'textarea', placeholder: 'Hi {{item.first_name}},…' },
-    ],
-    get_analytics: [
-      { key: 'sequence_id', label: 'Sequence ID (optional)', type: 'text' },
-    ],
-    list_templates: [],
-  },
-  champgraph: {
-    ingest_prospect: [
-      { key: 'email', label: 'Email', type: 'text', placeholder: '{{item.email}}' },
-      { key: 'first_name', label: 'First name', type: 'text', placeholder: '{{item.first_name}}' },
-      { key: 'last_name', label: 'Last name', type: 'text', placeholder: '{{item.last_name}}' },
-      { key: 'company', label: 'Company', type: 'text', placeholder: '{{item.company}}' },
-      { key: 'title', label: 'Title', type: 'text', placeholder: '{{item.title}}' },
-    ],
-    get_prospect_status: [
-      { key: 'email', label: 'Email', type: 'text', placeholder: '{{item.email}}' },
-    ],
-    ingest_company: [
-      { key: 'name', label: 'Company name', type: 'text', placeholder: '{{item.company}}' },
-      { key: 'domain', label: 'Domain', type: 'text', placeholder: '{{item.domain}}' },
-      { key: 'industry', label: 'Industry', type: 'text', placeholder: '{{item.industry}}' },
-    ],
-    semantic_search: [
-      { key: 'query', label: 'Query', type: 'text', placeholder: '{{prev.search_term}}' },
-      { key: 'limit', label: 'Max results', type: 'number' },
-    ],
-    nl_query: [
-      { key: 'query', label: 'Natural-language query', type: 'textarea',
-        placeholder: 'Find all prospects at enterprise companies in fintech' },
-    ],
-    add_relationship: [
-      { key: 'from_email', label: 'From (email)', type: 'text', placeholder: '{{prev.email}}' },
-      { key: 'to_email', label: 'To (email)', type: 'text', placeholder: '{{prev.target_email}}' },
-      { key: 'relationship', label: 'Relationship type', type: 'text', placeholder: 'knows / colleague' },
-    ],
-  },
-  champvoice: {
-    initiate_call: [
-      { key: 'to_number', label: 'Phone number (E.164)', type: 'text', placeholder: '{{item.phone}}',
-        hint: 'E.164 format required, e.g. +15551234567' },
-    ],
-    get_call_status: [
-      { key: 'call_id', label: 'Call ID', type: 'text', placeholder: '{{prev.callId}}',
-        hint: 'Use the callId field from initiate_call output (format: call_abc...)' },
-    ],
-    list_calls: [
-      { key: 'contact', label: 'Contact phone (optional)', type: 'text',
-        placeholder: '{{item.phone}}', hint: 'E.164 phone to filter call history for one contact' },
-      { key: 'flow_id', label: 'Flow ID (optional)', type: 'text',
-        placeholder: '{{canvas.flow_id}}', hint: 'Filter calls belonging to a specific canvas flow' },
-    ],
-    cancel_call: [
-      { key: 'call_id', label: 'Call ID', type: 'text', placeholder: '{{prev.callId}}',
-        hint: 'Note: ElevenLabs does not support cancellation — this will return an error.' },
-    ],
-  },
-  lakeb2b_pulse: {
-    track_page: [
-      { key: 'page_url', label: 'LinkedIn URL', type: 'text', placeholder: '{{item.linkedin_url}}' },
-    ],
-    schedule_engagement: [
-      { key: 'prospect_id', label: 'Prospect ID', type: 'text', placeholder: '{{prev.id}}' },
-      { key: 'action_type', label: 'Action type', type: 'select',
-        options: ['like', 'comment', 'connect', 'message'] },
-      { key: 'message', label: 'Message (optional)', type: 'textarea' },
-    ],
-    list_posts: [
-      { key: 'page_url', label: 'LinkedIn profile URL', type: 'text', placeholder: '{{item.linkedin_url}}' },
-      { key: 'limit', label: 'Max posts', type: 'number' },
-    ],
-    get_engagement_status: [
-      { key: 'prospect_id', label: 'Prospect ID', type: 'text', placeholder: '{{prev.id}}' },
-    ],
-  },
-}
-
-const KIND_FIELDS: Record<string, FieldDef[]> = {
-  'trigger.manual': [
-    { key: 'label', label: 'Trigger label', type: 'text', placeholder: 'Run workflow' },
-    { key: 'items', label: 'Input items (JSON array or leave blank)', type: 'textarea',
-      placeholder: '[{"email":"a@b.com","name":"Alice"},...]',
-      hint: 'Paste a JSON array or upload a CSV via the chat panel.' },
-  ],
-  'trigger.webhook': [
-    { key: 'path', label: 'Webhook path', type: 'text', placeholder: '/hooks/my-event' },
-    { key: 'secret', label: 'Signing secret (optional)', type: 'text' },
-  ],
-  'trigger.cron': [
-    { key: 'cron', label: 'Cron expression', type: 'text', placeholder: '0 9 * * 1-5',
-      hint: 'Examples: "0 9 * * 1-5" = weekdays 9am · "0 8 * * *" = daily 8am' },
-    { key: 'timezone', label: 'Timezone', type: 'text', placeholder: 'UTC' },
-  ],
-  'trigger.event': [
-    { key: 'event', label: 'Event name', type: 'text', placeholder: 'email.replied' },
-    { key: 'source', label: 'Source tool (optional)', type: 'text', placeholder: 'champmail' },
-  ],
-  'http': [
-    { key: 'url', label: 'URL', type: 'text', placeholder: 'https://api.example.com/endpoint' },
-    { key: 'method', label: 'Method', type: 'select', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
-    { key: 'headers', label: 'Headers (JSON object)', type: 'textarea',
-      placeholder: '{"Authorization":"Bearer {{credential.token}}"}' },
-    { key: 'body', label: 'Body (JSON or text)', type: 'textarea',
-      placeholder: '{"text":"{{prev.message}}"}' },
-    { key: 'credential', label: 'Credential', type: 'credential' },
-  ],
-  'set': [
-    { key: 'fields', label: 'Fields (JSON object — keys = output fields, values = expressions)',
-      type: 'textarea', placeholder: '{"email":"{{prev.email}}","name":"{{prev.first}} {{prev.last}}"}' },
-  ],
-  'merge': [
-    { key: 'mode', label: 'Merge mode', type: 'select', options: ['all', 'first'] },
-  ],
-  'if': [
-    { key: 'condition', label: 'Condition expression', type: 'text',
-      placeholder: '{{ prev.tier }} == "enterprise"',
-      hint: 'Emits branch "true" or "false" downstream.' },
-  ],
-  'switch': [
-    { key: 'value', label: 'Value expression', type: 'text', placeholder: '{{ prev.status }}' },
-    { key: 'cases', label: 'Cases (JSON array: [{match,branch}])', type: 'textarea',
-      placeholder: '[{"match":"positive","branch":"positive"},{"match":"negative","branch":"negative"}]' },
-    { key: 'default_branch', label: 'Default branch name', type: 'text', placeholder: 'other' },
-  ],
-  'loop': [
-    { key: 'items', label: 'Items expression', type: 'text',
-      placeholder: '{{ trigger.payload.items }}',
-      hint: 'Must resolve to a JSON array at runtime.' },
-    { key: 'concurrency', label: 'Concurrency (parallel items at once)', type: 'number' },
-    { key: 'each', label: 'Per-item transform (JSON object of expressions)', type: 'textarea',
-      placeholder: '{"email":"{{item.email}}","name":"{{item.name}}"}' },
-  ],
-  'split': [
-    { key: 'mode', label: 'Split mode', type: 'select', options: ['fixed_n', 'fan_out'],
-      hint: '"fixed_n" distributes items evenly. "fan_out" sends full list to each branch.' },
-    { key: 'n', label: 'Number of branches', type: 'number' },
-    { key: 'items', label: 'Items expression', type: 'text', placeholder: '{{ prev.records }}' },
-  ],
-  'wait': [
-    { key: 'seconds', label: 'Wait duration (seconds)', type: 'number',
-      hint: '3600 = 1h · 86400 = 1 day · 259200 = 3 days' },
-  ],
-  'code': [
-    { key: 'expression', label: 'Python expression', type: 'textarea',
-      placeholder: '{"result": [r for r in prev["records"] if r.get("tier") == "enterprise"]}' },
-  ],
-  'llm': [
-    { key: 'prompt', label: 'Prompt', type: 'textarea',
-      placeholder: 'Write a personalised 1-sentence opener for {{item.name}} at {{item.company}}.' },
-    { key: 'system', label: 'System prompt (optional)', type: 'textarea' },
-    { key: 'json_mode', label: 'JSON mode', type: 'select', options: ['false', 'true'] },
-    { key: 'model', label: 'Model override (optional)', type: 'text', placeholder: 'anthropic/claude-3-haiku' },
-  ],
-  'champmail_reply': [
-    { key: 'credential', label: 'ChampMail credential', type: 'credential' },
-  ],
-  // Tool nodes — defined below as combined action + credential + dynamic inputs
-  'champmail': [
-    { key: 'action', label: 'Action', type: 'select',
-      options: ['add_prospect', 'start_sequence', 'pause_sequence', 'send_single_email',
-        'get_analytics', 'list_templates', 'enroll_sequence'] },
-    { key: 'credential', label: 'ChampMail credential', type: 'credential',
-      hint: '⚠ Required. Add via Credentials section in the left sidebar.' },
-  ],
-  'champgraph': [
-    { key: 'action', label: 'Action', type: 'select',
-      options: ['ingest_prospect', 'get_prospect_status', 'ingest_company', 'semantic_search', 'nl_query', 'add_relationship'] },
-    { key: 'credential', label: 'ChampGraph credential (optional)', type: 'credential' },
-  ],
-  'champvoice': [
-    { key: 'action', label: 'Action', type: 'select',
-      options: ['initiate_call', 'get_call_status', 'list_calls', 'cancel_call'],
-      hint: 'The champiq-voice gateway routes this to ElevenLabs. No ChampServer login needed.' },
-    { key: 'credential', label: 'ChampVoice credential', type: 'credential',
-      hint: 'Must contain gateway_url, api_key, elevenlabs_api_key, agent_id, phone_number_id, and optionally canvas_webhook_secret. Add via the Credentials panel.' },
-  ],
-  'lakeb2b_pulse': [
-    { key: 'action', label: 'Action', type: 'select',
-      options: ['track_page', 'schedule_engagement', 'list_posts', 'get_engagement_status'] },
-    { key: 'credential', label: 'LakeB2B credential (optional)', type: 'credential' },
-  ],
-}
-
-// Kinds that have action-aware dynamic input sections
-const TOOL_KINDS_WITH_ACTIONS = new Set(['champmail', 'champgraph', 'champvoice', 'lakeb2b_pulse'])
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -342,6 +134,14 @@ function NodeConfigForm({ nodeId, kind, config }: {
   config: Record<string, unknown>
 }) {
   const { updateNodeConfig } = useCanvasStore()
+
+  // csv.upload has a self-contained inspector (file picker + parsed-row preview).
+  // The generic field-driven form is the wrong shape here — we need a real <input
+  // type="file"> wired to a parser, not a JSON textarea.
+  if (kind === 'csv.upload') {
+    return <CsvUploadConfig nodeId={nodeId} config={config} />
+  }
+
   const staticFields = KIND_FIELDS[kind] || []
   const currentAction = config.action as string | undefined
 
@@ -538,8 +338,17 @@ type ConfigTab = 'form' | 'json'
 export function RightPanel() {
   const { selectedNodeId, nodes, nodeRuntimeStates, setSelectedNode } = useCanvasStore()
   const [copied, setCopied] = useState(false)
-  const [showRaw, setShowRaw] = useState(false)
+  const [showRaw, setShowRaw] = useState(true)
   const [activeTab, setActiveTab] = useState<ConfigTab>('form')
+
+  // Reset panel UI state when the selected node changes so stale
+  // collapsed/expanded state from the previous node doesn't bleed through.
+  const prevNodeIdRef = useRef<string | null>(null)
+  if (selectedNodeId !== prevNodeIdRef.current) {
+    prevNodeIdRef.current = selectedNodeId
+    if (showRaw === false) setShowRaw(true)
+    if (activeTab !== 'form') setActiveTab('form')
+  }
 
   const node = nodes.find((n) => n.id === selectedNodeId)
   if (!node) return null
@@ -622,39 +431,29 @@ export function RightPanel() {
           <JsonConfigEditor nodeId={node.id} config={config} />
         )}
 
-        {/* Runtime output / raw toggle — only in Form tab */}
-        {activeTab === 'form' && (
-          <>
-            <div style={{ borderTop: '1px solid var(--border)' }}>
-              <button
-                className="w-full flex items-center justify-between px-3 py-2 text-xs"
-                style={{ color: 'var(--text-3)' }}
-                onClick={() => setShowRaw((v) => !v)}
-              >
-                <span>Runtime output (JSON)</span>
-                {showRaw ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-              </button>
-              {showRaw && (
-                <pre
-                  className="text-xs px-3 pb-3 overflow-x-auto whitespace-pre-wrap break-words"
-                  style={{ color: 'var(--text-1)', maxHeight: 300, overflowY: 'auto' }}
-                >
-                  {jsonText}
-                </pre>
-              )}
-            </div>
-
-            {runtime?.output && (
-              <div className="px-3 pb-3">
-                <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-2)' }}>Last output preview</p>
-                <pre className="text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words"
-                  style={{ background: 'var(--bg-sidebar)', color: 'var(--text-1)', maxHeight: 200, overflowY: 'auto' }}>
-                  {JSON.stringify(runtime.output, null, 2)}
-                </pre>
-              </div>
-            )}
-          </>
-        )}
+        {/* Runtime output — always visible after execution */}
+        <div style={{ borderTop: '1px solid var(--border)' }}>
+          <button
+            className="w-full flex items-center justify-between px-3 py-2 text-xs"
+            style={{ color: 'var(--text-3)' }}
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            <span className="font-medium" style={{ color: runtime?.output ? 'var(--text-1)' : 'var(--text-3)' }}>
+              {runtime?.output ? '✓ Runtime output (JSON)' : 'Runtime output (JSON)'}
+            </span>
+            {showRaw ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {showRaw && (
+            <pre
+              className="text-xs px-3 pb-3 overflow-x-auto whitespace-pre-wrap break-words"
+              style={{ color: 'var(--text-1)', maxHeight: 400, overflowY: 'auto' }}
+            >
+              {runtime?.output
+                ? JSON.stringify(runtime.output, null, 2)
+                : '// No output yet — run the workflow first'}
+            </pre>
+          )}
+        </div>
       </div>
     </aside>
   )

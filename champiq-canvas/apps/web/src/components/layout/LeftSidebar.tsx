@@ -4,6 +4,7 @@ import { getToolId, getNodeMeta } from '@/lib/manifest'
 import { saveCurrentCanvas } from '@/hooks/usePersistence'
 import { resolveIcon, Plus, Trash2 } from '@/lib/icons'
 import { CredentialsPanel } from './CredentialsPanel'
+import { ChampMailPanel } from './ChampMailPanel'
 import type { ChampIQManifest, CanvasMeta } from '@/types'
 import type { Node, Edge } from '@xyflow/react'
 
@@ -73,9 +74,24 @@ function switchCanvas(targetId: string) {
 }
 
 function createCanvas() {
+  const { canvasList, currentCanvasId } = useCanvasStore.getState()
+
+  // Don't create a duplicate blank canvas — switch to existing blank one instead
+  const existingBlank = canvasList.find(
+    (c) => c.id !== currentCanvasId && !localStorage.getItem(`champiq:canvas:${c.id}`)
+  )
+  if (existingBlank) {
+    switchCanvas(existingBlank.id)
+    return
+  }
+
   saveCurrentCanvas()
   const id = crypto.randomUUID()
-  const meta: CanvasMeta = { id, name: 'Untitled Canvas', updatedAt: new Date().toISOString() }
+  const meta: CanvasMeta = { id, name: 'New Canvas', updatedAt: new Date().toISOString() }
+
+  // Write empty state immediately so saveCurrentCanvas never inherits old nodes
+  localStorage.setItem(`champiq:canvas:${id}`, JSON.stringify({ nodes: [], edges: [] }))
+
   useCanvasStore.setState((s) => ({
     canvasList: [...s.canvasList, meta],
     currentCanvasId: id,
@@ -195,6 +211,11 @@ export function LeftSidebar() {
 
       {/* ── Credentials ───────────────────────────────────────────────────── */}
       <CredentialsPanel />
+
+      <div style={{ borderTop: '1px solid var(--border)' }} />
+
+      {/* ── ChampMail (inline) ────────────────────────────────────────────── */}
+      <ChampMailPanel />
 
       {/* ── Node palette ──────────────────────────────────────────────────── */}
       {buildPalette(manifests).map(({ group, items }) => (

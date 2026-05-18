@@ -26,6 +26,12 @@ class CronScheduler:
         self._scheduler = AsyncIOScheduler()
         self._jobs: dict[str, str] = {}  # trigger_id -> apscheduler job id
 
+    @property
+    def scheduler(self) -> AsyncIOScheduler:
+        """Underlying APScheduler instance — exposed so other modules
+        (e.g. ChampMail cadence) can register jobs on the same loop."""
+        return self._scheduler
+
     async def start(self) -> None:
         self._scheduler.start()
         await self.sync()
@@ -66,6 +72,12 @@ class CronScheduler:
                 args=[workflow_id, trigger_id],
                 id=trigger_id,
                 replace_existing=True,
+                # max_instances=1 prevents the second uvicorn worker from firing
+                # the same cron job when both workers share the same in-process
+                # scheduler. coalesce=True collapses missed ticks into one run.
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=30,
             )
             self._jobs[trigger_id] = job.id
 

@@ -1,15 +1,17 @@
 import uuid
+import json
 import asyncio
-from fastapi import APIRouter
-from ..jobs import job_store, simulate_job_progression
-from ..cli_shim import invoke_tool_cli
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from ..container import get_container
+from ..database import get_db
+from ..jobs import job_store
 
 router = APIRouter()
 
-VALID_TOOLS = {"champgraph", "champmail", "champvoice"}
+VALID_TOOLS = {"champgraph", "champmail", "champvoice", "lakeb2b_pulse"}
 
-# Stub populate data.
-# TODO(Hemang): replace stub data with real API calls to each tool backend.
 STUB_POPULATE: dict[str, dict] = {
     "champgraph": {
         "industries": ["SaaS", "FinTech", "HealthTech", "EdTech", "RetailTech"],
@@ -30,10 +32,6 @@ STUB_POPULATE: dict[str, dict] = {
 }
 
 
-# Legacy tool routes — namespaced under /tools/ so they no longer shadow
-# /api/workflows, /api/executions, etc. Kept for the existing canvas
-# run-action flow; the orchestrator path is /api/workflows/ad-hoc/run.
-
 @router.get("/tools/{tool}/status")
 async def tool_status(tool: str):
     if tool not in VALID_TOOLS:
@@ -42,17 +40,137 @@ async def tool_status(tool: str):
 
 
 @router.get("/tools/{tool}/{resource}")
-async def populate_resource(tool: str, resource: str):
+async def populate_resource(tool: str, resource: str, db: AsyncSession = Depends(get_db)):
     if tool not in VALID_TOOLS:
         return []
+    # Real lookups for the inline champmail module — replaces the old stubs.
+    if tool == "champmail":
+        from ..champmail.repositories import SequenceRepository, TemplateRepository  # noqa: PLC0415
+        if resource == "templates":
+            rows = await TemplateRepository(db).list()
+            return [{"value": str(r.id), "label": r.name} for r in rows]
+        if resource == "sequences":
+            rows = await SequenceRepository(db).list()
+            return [{"value": str(r.id), "label": r.name} for r in rows]
     return STUB_POPULATE.get(tool, {}).get(resource, [])
 
 
+async def _invoke_champmail_local(action: str, inputs: dict) -> dict:
+    """Run a champmail action through the local executor's dispatcher.
+
+    The legacy HTTP-driver pathway is gone; champmail now lives inline so we
+    bypass the driver dict and call the action handlers directly against a
+    fresh DB session. Credentials are not consulted — single-tenant means
+    we don't need them anymore.
+    """
+    from ..champmail.nodes.champmail_node import _ACTION_HANDLERS, ChampmailLocalExecutor  # noqa: PLC0415
+    from ..database import get_session_factory  # noqa: PLC0415
+
+    handler = _ACTION_HANDLERS.get(action)
+    if handler is None:
+        raise KeyError(f"champmail: unknown action {action!r}")
+
+    container = get_container()
+    executor = ChampmailLocalExecutor(
+        container.mail_transport,
+        container.mail_renderer,
+        transport_factory=container.mail_transport_factory,
+    )
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        try:
+            result = await handler(executor, inputs or {}, session)
+            await session.commit()
+            return result
+        except Exception:
+            await session.rollback()
+            raise
+
+
 @router.post("/tools/{tool}/{action}")
-async def run_action(tool: str, action: str, payload: dict = {}):
+async def run_action(tool: str, action: str, payload: dict = {}, db: AsyncSession = Depends(get_db)):
     if tool not in VALID_TOOLS:
-        return {"error": f"Unknown tool: {tool}"}
+        raise HTTPException(400, f"Unknown tool: {tool}")
+
+    container = get_container()
+
+    # champmail, champgraph, and lakeb2b_pulse are inline now — no entries in the drivers dict.
+    is_champmail = tool == "champmail"
+    is_champgraph = tool == "champgraph"
+    is_b2bpulse = tool == "lakeb2b_pulse"
+    inline_tool = is_champmail or is_champgraph or is_b2bpulse
+    driver = None
+    if not inline_tool:
+        driver = container.drivers.get(tool)
+        if driver is None:
+            raise HTTPException(500, f"No driver registered for tool: {tool}")
+
+    # Resolve credentials — accept credential_id (int) or credential name (str).
+    # Inline tools (champmail/champgraph) authenticate via env or credential records
+    # they manage themselves; this credential block is only for HTTP drivers.
+    credentials: dict = {}
+    if not inline_tool:
+        cred_ref = payload.get("credential_id") or payload.get("credential")
+        if cred_ref is not None:
+            try:
+                if isinstance(cred_ref, int):
+                    from ..models import CredentialTable  # noqa: PLC0415
+                    row = await db.get(CredentialTable, cred_ref)
+                    if row is None:
+                        raise HTTPException(404, f"Credential {cred_ref} not found")
+                    credentials = json.loads(container.crypto.decrypt(row.data_encrypted))
+                else:
+                    credentials = await container.credential_resolver.resolve(str(cred_ref))
+            except KeyError as e:
+                raise HTTPException(404, str(e))
+
+    inputs = payload.get("inputs", {})
+
     job_id = f"job_{uuid.uuid4().hex[:8]}"
-    await invoke_tool_cli(tool, action, payload)
-    asyncio.create_task(simulate_job_progression(job_id))
+
+    async def _run():
+        try:
+            if is_champmail:
+                result = await _invoke_champmail_local(action, inputs)
+            elif is_champgraph:
+                result = await container.champgraph.invoke(action, inputs)
+            elif is_b2bpulse:
+                # Resolve credentials — same pattern as champmail/champgraph
+                b2b_credentials: dict = {}
+                b2b_cred_id: int | None = None
+                cred_ref = payload.get("credential_id") or payload.get("credential")
+                if cred_ref is not None:
+                    try:
+                        if isinstance(cred_ref, int):
+                            from ..models import CredentialTable  # noqa: PLC0415
+                            row = await db.get(CredentialTable, cred_ref)
+                            if row:
+                                b2b_credentials = json.loads(container.crypto.decrypt(row.data_encrypted))
+                                b2b_cred_id = row.id
+                        else:
+                            b2b_credentials = await container.credential_resolver.resolve(str(cred_ref))
+                            # _credential_id is injected by SqlCredentialResolver.resolve()
+                            _cid = b2b_credentials.get("_credential_id") or b2b_credentials.get("credential_id")
+                            if _cid:
+                                b2b_cred_id = int(_cid)
+                    except (KeyError, ValueError):
+                        pass
+                from ..b2bpulse.executor import B2BPulseLocalExecutor  # noqa: PLC0415
+                exec_instance = container.registry.get("lakeb2b_pulse")
+                if not isinstance(exec_instance, B2BPulseLocalExecutor):
+                    raise RuntimeError("B2BPulseLocalExecutor not registered")
+                result = await exec_instance._dispatch(action, inputs, b2b_credentials, b2b_cred_id)
+            else:
+                result = await driver.invoke(action, inputs, credentials)
+            job_store[job_id] = {"job_id": job_id, "status": "done", "progress": 100, "result": result}
+        except Exception as exc:
+            import traceback
+            err_msg = str(exc) or f"{type(exc).__name__}: {repr(exc)}"
+            if not err_msg.strip():
+                err_msg = traceback.format_exc()
+            job_store[job_id] = {"job_id": job_id, "status": "error", "progress": 100, "result": {"error": err_msg}}
+
+    job_store[job_id] = {"job_id": job_id, "status": "running", "progress": 0, "result": None, "created_at": datetime.now(timezone.utc).isoformat()}
+    asyncio.create_task(_run())
+
     return {"job_id": job_id, "accepted": True, "async": True}
